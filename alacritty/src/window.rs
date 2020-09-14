@@ -365,8 +365,13 @@ impl Window {
     /// Toggle the window being always on top
     pub fn toggle_always_on_top(&mut self) {
         self.is_on_top = !self.is_on_top;
+        // This method was already implemented for me!
         self.windowed_context.window.set_always_on_top(self.is_on_top);
 
+        // Now to get NSWindow I can:
+        // self.windowed_context.window.ns_window();
+        //
+        //
         // What I was looking at having to do until I realized that I only
         // had direct access to the OpenGLContext:
 

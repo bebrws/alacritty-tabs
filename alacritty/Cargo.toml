@@ -16,7 +16,7 @@ default-features = false
 [dependencies]
 # objc = { git = "https://github.com/bebrws/rust-objc", branch = "master" }
 objc = "0.2.6"
-# glutin = { path = "/Users/bbarrows/repos/glutin/glutin", features = ["serde"]  }
+glutin = { path = "/Users/bbarrows/repos/glutin/glutin", features = ["serde"]  }
 clap = "2"
 log = { version = "0.4", features = ["std"] }
 time = "0.1.40"
@@ -24,7 +24,7 @@ fnv = "1"
 serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.8"
 serde_json = "1"
-glutin = { version = "0.24.0", features = ["serde"] }
+# glutin = { version = "0.24.0", features = ["serde"] }
 notify = "4"
 parking_lot = "0.10.2"
 crossfont = { version = "0.1.0", features = ["force_system_fontconfig"] }
