@@ -40,6 +40,15 @@ use crate::config::window::{Decorations, StartupMode, WindowConfig};
 use crate::config::Config;
 use crate::gl;
 
+use objc;
+use objc::sel;
+use objc::sel_impl;
+use objc::runtime::{Class, Object};
+use std::io::{self, Write};
+use libc::c_char;
+
+use std::ffi::CStr;
+
 // It's required to be in this directory due to the `windows.rc` file.
 #[cfg(not(any(target_os = "macos", windows)))]
 static WINDOW_ICON: &[u8] = include_bytes!("../alacritty.ico");
@@ -140,6 +149,7 @@ pub struct Window {
     windowed_context: WindowedContext<PossiblyCurrent>,
     current_mouse_cursor: CursorIcon,
     mouse_visible: bool,
+    is_on_top:bool,
 }
 
 impl Window {
@@ -195,6 +205,7 @@ impl Window {
         Ok(Self {
             current_mouse_cursor,
             mouse_visible: true,
+            is_on_top: false,
             windowed_context,
             #[cfg(not(any(target_os = "macos", windows)))]
             should_draw: Arc::new(AtomicBool::new(true)),
@@ -350,6 +361,39 @@ impl Window {
     pub fn toggle_fullscreen(&mut self) {
         self.set_fullscreen(self.window().fullscreen().is_none());
     }
+
+    /// Toggle the window being always on top
+    pub fn toggle_always_on_top(&mut self) {
+        self.is_on_top = !self.is_on_top;
+        self.windowed_context.window.set_always_on_top(self.is_on_top);
+
+        // What I was looking at having to do until I realized that I only
+        // had direct access to the OpenGLContext:
+
+        // unsafe {
+        //     // self.windowed_context.context().context.make_on_top();
+        //     self.windowed_context.window.set_always_on_top(true);
+        // }
+        // let nsAppCls = objc::class!(NSObject);
+        // let app: *mut Object = unsafe {
+        //     objc::msg_send![nsAppCls, sharedApplication]
+        // };
+        // let appString: *mut Object = unsafe {
+        //     objc::msg_send![app, description]
+        // };
+        // let appStringUTF8CString: *mut c_char = unsafe {
+        //     objc::msg_send![appString, UTF8String]
+        // };
+        // // fn app_desc_safe() -> String {
+        // //     unsafe {
+        // //         CStr::from_ptr(appStringUTF8CString).to_string_lossy().into_owned()
+        // //     }
+        // // }
+        // unsafe {
+        //     let app_desc_safe = CStr::from_ptr(appStringUTF8CString).to_string_lossy().into_owned();
+        //     println!("string: {}", app_desc_safe);
+        // }
+    }    
 
     #[cfg(target_os = "macos")]
     pub fn toggle_simple_fullscreen(&mut self) {

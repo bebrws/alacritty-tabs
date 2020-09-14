@@ -163,6 +163,9 @@ pub enum Action {
     /// Toggle fullscreen.
     ToggleFullscreen,
 
+    /// Toggle always on top.
+    ToggleAlwaysOnTop,
+
     /// Toggle simple fullscreen on macOS.
     #[cfg(target_os = "macos")]
     ToggleSimpleFullscreen,
@@ -528,6 +531,7 @@ pub fn platform_key_bindings() -> Vec<KeyBinding> {
         V, ModifiersState::LOGO, ~TermMode::VI; Action::Paste;
         N, ModifiersState::LOGO; Action::SpawnNewInstance;
         F, ModifiersState::CTRL | ModifiersState::LOGO; Action::ToggleFullscreen;
+        A, ModifiersState::SHIFT | ModifiersState::LOGO; Action::ToggleAlwaysOnTop;
         K, ModifiersState::LOGO; Action::ClearHistory;
         C, ModifiersState::LOGO; Action::Copy;
         C, ModifiersState::LOGO, +TermMode::VI; Action::ClearSelection;

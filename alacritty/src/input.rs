@@ -228,6 +228,7 @@ impl<T: EventListener> Execute<T> for Action {
             Action::SearchForward => ctx.start_search(Direction::Right),
             Action::SearchBackward => ctx.start_search(Direction::Left),
             Action::ToggleFullscreen => ctx.window_mut().toggle_fullscreen(),
+            Action::ToggleAlwaysOnTop => ctx.window_mut().toggle_always_on_top(),
             #[cfg(target_os = "macos")]
             Action::ToggleSimpleFullscreen => ctx.window_mut().toggle_simple_fullscreen(),
             #[cfg(target_os = "macos")]
