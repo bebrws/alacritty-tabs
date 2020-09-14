@@ -1,3 +1,6 @@
+## Brad's List of Modifications:
+  * Added a ToggleAlwaysOnTop Action which can be triggered by a keyboard event
+
 <h1 align="center">Alacritty</h1>
 <p align="center">
     <img width="200" alt="Alacritty Logo" src="extra/logo/compat/alacritty-term+scanlines.png">
