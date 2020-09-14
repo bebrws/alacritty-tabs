@@ -16,7 +16,7 @@ default-features = false
 [dependencies]
 # objc = { git = "https://github.com/bebrws/rust-objc", branch = "master" }
 objc = "0.2.6"
-glutin = { path = "/Users/bbarrows/repos/glutin/glutin", features = ["serde"]  }
+glutin = { git = "https://github.com/bebrws/glutin", features = ["serde"], branch = "master" }
 clap = "2"
 log = { version = "0.4", features = ["std"] }
 time = "0.1.40"
