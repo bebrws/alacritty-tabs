@@ -524,7 +524,7 @@ pub fn platform_key_bindings() -> Vec<KeyBinding> {
         KeyBinding;
         Key0,   ModifiersState::LOGO; Action::ResetFontSize;
         Equals, ModifiersState::LOGO; Action::IncreaseFontSize;
-        Add,    ModifiersState::LOGO; Action::IncreaseFontSize;
+        // Add,    ModifiersState::LOGO; Action::IncreaseFontSize;
         Minus,  ModifiersState::LOGO; Action::DecreaseFontSize;
         Insert, ModifiersState::SHIFT, ~TermMode::VI; Action::Esc("\x1b[2;2~".into());
         K, ModifiersState::LOGO, ~TermMode::VI; Action::Esc("\x0c".into());
