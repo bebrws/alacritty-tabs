@@ -1,4 +1,9 @@
 ## Brad's List of Modifications:
+
+It looks like this:
+
+![Image of alacritty running with minor modifications I made](lookslike.png)
+
   * Added a ToggleAlwaysOnTop Action which can be triggered by a keyboard event
 
 <h1 align="center">Alacritty</h1>
