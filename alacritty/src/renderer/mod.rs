@@ -9,6 +9,7 @@ use std::ptr;
 use std::sync::mpsc;
 use std::time::Duration;
 
+use bitflags::bitflags;
 use crossfont::{
     BitmapBuffer, FontDesc, FontKey, GlyphKey, Rasterize, RasterizedGlyph, Rasterizer, Size, Slant,
     Style, Weight,
@@ -19,7 +20,7 @@ use notify::{watcher, DebouncedEvent, RecursiveMode, Watcher};
 
 use alacritty_terminal::config::Cursor;
 use alacritty_terminal::index::{Column, Line};
-use alacritty_terminal::term::cell::{self, Flags};
+use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::color::Rgb;
 use alacritty_terminal::term::{CursorKey, RenderableCell, RenderableCellContent, SizeInfo};
 use alacritty_terminal::thread;
@@ -123,7 +124,7 @@ pub struct RectShaderProgram {
 #[derive(Copy, Debug, Clone)]
 pub struct Glyph {
     tex_id: GLuint,
-    multicolor: u8,
+    multicolor: bool,
     top: i16,
     left: i16,
     width: i16,
@@ -359,30 +360,46 @@ impl GlyphCache {
     }
 }
 
+// NOTE: These flags must be in sync with their usage in the text.*.glsl shaders.
+bitflags! {
+    #[repr(C)]
+    struct RenderingGlyphFlags: u8 {
+        const WIDE_CHAR = 0b0000_0001;
+        const COLORED   = 0b0000_0010;
+    }
+}
+
 #[derive(Debug)]
 #[repr(C)]
 struct InstanceData {
     // Coords.
     col: u16,
     row: u16,
+
     // Glyph offset.
     left: i16,
     top: i16,
+
     // Glyph size.
     width: i16,
     height: i16,
+
     // UV offset.
     uv_left: f32,
     uv_bot: f32,
+
     // uv scale.
     uv_width: f32,
     uv_height: f32,
+
     // Color.
     r: u8,
     g: u8,
     b: u8,
-    // Flag indicating that a glyph uses multiple colors; like an Emoji.
-    multicolor: u8,
+
+    // Cell flags like multicolor or fullwidth character.
+    cell_flags: RenderingGlyphFlags,
+
     // Background color.
     bg_r: u8,
     bg_g: u8,
@@ -436,10 +453,14 @@ impl Batch {
         Self { tex: 0, instances: Vec::with_capacity(BATCH_MAX) }
     }
 
-    pub fn add_item(&mut self, cell: RenderableCell, glyph: &Glyph) {
+    pub fn add_item(&mut self, cell: &RenderableCell, glyph: &Glyph) {
         if self.is_empty() {
             self.tex = glyph.tex_id;
         }
+
+        let mut cell_flags = RenderingGlyphFlags::empty();
+        cell_flags.set(RenderingGlyphFlags::COLORED, glyph.multicolor);
+        cell_flags.set(RenderingGlyphFlags::WIDE_CHAR, cell.flags.contains(Flags::WIDE_CHAR));
 
         self.instances.push(InstanceData {
             col: cell.column.0 as u16,
@@ -458,12 +479,12 @@ impl Batch {
             r: cell.fg.r,
             g: cell.fg.g,
             b: cell.fg.b,
+            cell_flags,
 
             bg_r: cell.bg.r,
             bg_g: cell.bg.g,
             bg_b: cell.bg.b,
             bg_a: (cell.bg_alpha * 255.0) as u8,
-            multicolor: glyph.multicolor,
         });
     }
 
@@ -586,10 +607,10 @@ impl QuadRenderer {
             // UV offset.
             add_attr!(4, gl::FLOAT, f32);
 
-            // Color and multicolor flag.
+            // Color and cell flags.
             //
             // These are packed together because of an OpenGL driver issue on macOS, which caused a
-            // `vec3(u8)` text color and a `u8` multicolor flag to increase the rendering time by a
+            // `vec3(u8)` text color and a `u8` cell flags to increase the rendering time by a
             // huge margin.
             add_attr!(4, gl::UNSIGNED_BYTE, u8);
 
@@ -953,15 +974,12 @@ impl<'a> RenderApi<'a> {
             .map(|(i, c)| RenderableCell {
                 line,
                 column: Column(i),
-                inner: RenderableCellContent::Chars({
-                    let mut chars = [' '; cell::MAX_ZEROWIDTH_CHARS + 1];
-                    chars[0] = c;
-                    chars
-                }),
+                inner: RenderableCellContent::Chars((c, None)),
                 flags: Flags::empty(),
                 bg_alpha,
                 fg,
                 bg: bg.unwrap_or(Rgb { r: 0, g: 0, b: 0 }),
+                is_match: false,
             })
             .collect::<Vec<_>>();
 
@@ -971,7 +989,7 @@ impl<'a> RenderApi<'a> {
     }
 
     #[inline]
-    fn add_render_item(&mut self, cell: RenderableCell, glyph: &Glyph) {
+    fn add_render_item(&mut self, cell: &RenderableCell, glyph: &Glyph) {
         // Flush batch if tex changing.
         if !self.batch.is_empty() && self.batch.tex != glyph.tex_id {
             self.render_batch();
@@ -985,14 +1003,14 @@ impl<'a> RenderApi<'a> {
         }
     }
 
-    pub fn render_cell(&mut self, cell: RenderableCell, glyph_cache: &mut GlyphCache) {
-        let chars = match cell.inner {
+    pub fn render_cell(&mut self, mut cell: RenderableCell, glyph_cache: &mut GlyphCache) {
+        let (mut c, zerowidth) = match cell.inner {
             RenderableCellContent::Cursor(cursor_key) => {
                 // Raw cell pixel buffers like cursors don't need to go through font lookup.
                 let metrics = glyph_cache.metrics;
                 let glyph = glyph_cache.cursor_cache.entry(cursor_key).or_insert_with(|| {
                     self.load_glyph(&cursor::get_cursor_glyph(
-                        cursor_key.style,
+                        cursor_key.shape,
                         metrics,
                         self.config.font.offset.x,
                         self.config.font.offset.y,
@@ -1000,10 +1018,10 @@ impl<'a> RenderApi<'a> {
                         self.cursor_config.thickness(),
                     ))
                 });
-                self.add_render_item(cell, glyph);
+                self.add_render_item(&cell, glyph);
                 return;
             },
-            RenderableCellContent::Chars(chars) => chars,
+            RenderableCellContent::Chars((c, ref mut zerowidth)) => (c, zerowidth.take()),
         };
 
         // Get font key for cell.
@@ -1014,37 +1032,33 @@ impl<'a> RenderApi<'a> {
             _ => glyph_cache.font_key,
         };
 
-        // Don't render text of HIDDEN cells.
-        let mut chars = if cell.flags.contains(Flags::HIDDEN) {
-            [' '; cell::MAX_ZEROWIDTH_CHARS + 1]
-        } else {
-            chars
-        };
-
-        // Render tabs as spaces in case the font doesn't support it.
-        if chars[0] == '\t' {
-            chars[0] = ' ';
+        // Ignore hidden cells and render tabs as spaces to prevent font issues.
+        let hidden = cell.flags.contains(Flags::HIDDEN);
+        if c == '\t' || hidden {
+            c = ' ';
         }
 
-        let mut glyph_key = GlyphKey { font_key, size: glyph_cache.font_size, c: chars[0] };
+        let mut glyph_key = GlyphKey { font_key, size: glyph_cache.font_size, c };
 
         // Add cell to batch.
         let glyph = glyph_cache.get(glyph_key, self);
-        self.add_render_item(cell, glyph);
+        self.add_render_item(&cell, glyph);
 
-        // Render zero-width characters.
-        for c in (&chars[1..]).iter().filter(|c| **c != ' ') {
-            glyph_key.c = *c;
-            let mut glyph = *glyph_cache.get(glyph_key, self);
+        // Render visible zero-width characters.
+        if let Some(zerowidth) = zerowidth.filter(|_| !hidden) {
+            for c in zerowidth {
+                glyph_key.c = c;
+                let mut glyph = *glyph_cache.get(glyph_key, self);
 
-            // The metrics of zero-width characters are based on rendering
-            // the character after the current cell, with the anchor at the
-            // right side of the preceding character. Since we render the
-            // zero-width characters inside the preceding character, the
-            // anchor has been moved to the right by one cell.
-            glyph.left += glyph_cache.metrics.average_advance as i16;
+                // The metrics of zero-width characters are based on rendering
+                // the character after the current cell, with the anchor at the
+                // right side of the preceding character. Since we render the
+                // zero-width characters inside the preceding character, the
+                // anchor has been moved to the right by one cell.
+                glyph.left += glyph_cache.metrics.average_advance as i16;
 
-            self.add_render_item(cell, &glyph);
+                self.add_render_item(&cell, &glyph);
+            }
         }
     }
 }
@@ -1074,7 +1088,7 @@ fn load_glyph(
         },
         Err(AtlasInsertError::GlyphTooLarge) => Glyph {
             tex_id: atlas[*current_atlas].id,
-            multicolor: 0,
+            multicolor: false,
             top: 0,
             left: 0,
             width: 0,
@@ -1588,7 +1602,7 @@ impl Atlas {
 
         Glyph {
             tex_id: self.id,
-            multicolor: multicolor as u8,
+            multicolor,
             top: glyph.top as i16,
             left: glyph.left as i16,
             width: width as i16,

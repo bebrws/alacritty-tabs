@@ -1,4 +1,5 @@
 image: freebsd/latest
+
 packages:
   - devel/cmake
   - devel/pkgconf
@@ -7,15 +8,30 @@ packages:
   - x11-fonts/fontconfig
   - x11-fonts/dejavu
   - x11/libxcb
+
 sources:
   - https://github.com/alacritty/alacritty
+
+environment:
+  PATH: /home/build/.cargo/bin:/bin:/usr/bin:/usr/local/bin
+
 tasks:
   - rustup: |
       curl https://sh.rustup.rs -sSf | sh -s -- -y --default-toolchain stable --profile minimal
-  - 1-43-1: |
-      $HOME/.cargo/bin/rustup toolchain install --profile minimal 1.43.1
+  - test: |
       cd alacritty
-      $HOME/.cargo/bin/cargo +1.43.1 test
-  - stable: |
+      cargo test
+  - clippy: |
       cd alacritty
-      $HOME/.cargo/bin/cargo +stable test
+      rustup component add clippy
+      cargo clippy --all-targets
+  - oldstable: |
+      cd alacritty
+      rustup toolchain install --profile minimal 1.43.1
+      cargo +1.43.1 test
+  - feature-wayland: |
+      cd alacritty/alacritty
+      cargo test --no-default-features --features=wayland
+  - feature-x11: |
+      cd alacritty/alacritty
+      cargo test --no-default-features --features=x11

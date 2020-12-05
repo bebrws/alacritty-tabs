@@ -142,25 +142,30 @@ impl RenderLines {
     pub fn rects(&self, metrics: &Metrics, size: &SizeInfo) -> Vec<RenderRect> {
         self.inner
             .iter()
-            .map(|(flag, lines)| -> Vec<RenderRect> {
-                lines.iter().map(|line| line.rects(*flag, metrics, size)).flatten().collect()
+            .flat_map(|(flag, lines)| {
+                lines.iter().flat_map(move |line| line.rects(*flag, metrics, size))
             })
-            .flatten()
             .collect()
     }
 
     /// Update the stored lines with the next cell info.
     #[inline]
-    pub fn update(&mut self, cell: RenderableCell) {
-        self.update_flag(cell, Flags::UNDERLINE);
-        self.update_flag(cell, Flags::DOUBLE_UNDERLINE);
-        self.update_flag(cell, Flags::STRIKEOUT);
+    pub fn update(&mut self, cell: &RenderableCell) {
+        self.update_flag(&cell, Flags::UNDERLINE);
+        self.update_flag(&cell, Flags::DOUBLE_UNDERLINE);
+        self.update_flag(&cell, Flags::STRIKEOUT);
     }
 
     /// Update the lines for a specific flag.
-    fn update_flag(&mut self, cell: RenderableCell, flag: Flags) {
+    fn update_flag(&mut self, cell: &RenderableCell, flag: Flags) {
         if !cell.flags.contains(flag) {
             return;
+        }
+
+        // Include wide char spacer if the current cell is a wide char.
+        let mut end: Point = cell.into();
+        if cell.flags.contains(Flags::WIDE_CHAR) {
+            end.col += 1;
         }
 
         // Check if there's an active line.
@@ -170,13 +175,13 @@ impl RenderLines {
                 && cell.line == line.end.line
             {
                 // Update the length of the line.
-                line.end = cell.into();
+                line.end = end;
                 return;
             }
         }
 
         // Start new line if there currently is none.
-        let line = RenderLine { start: cell.into(), end: cell.into(), color: cell.fg };
+        let line = RenderLine { start: cell.into(), end, color: cell.fg };
         match self.inner.get_mut(&flag) {
             Some(lines) => lines.push(line),
             None => {

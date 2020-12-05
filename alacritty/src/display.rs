@@ -4,7 +4,7 @@
 use std::cmp::min;
 use std::f64;
 use std::fmt::{self, Formatter};
-#[cfg(not(any(target_os = "macos", windows)))]
+#[cfg(all(feature = "wayland", not(any(target_os = "macos", windows))))]
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 
@@ -17,7 +17,7 @@ use glutin::window::CursorIcon;
 use log::{debug, info};
 use parking_lot::MutexGuard;
 use unicode_width::UnicodeWidthChar;
-#[cfg(not(any(target_os = "macos", windows)))]
+#[cfg(all(feature = "wayland", not(any(target_os = "macos", windows))))]
 use wayland_client::{Display as WaylandDisplay, EventQueue};
 
 #[cfg(target_os = "macos")]
@@ -27,11 +27,13 @@ use crossfont::{self, Rasterize, Rasterizer};
 use alacritty_terminal::event::{EventListener, OnResize};
 use alacritty_terminal::index::{Column, Direction, Point};
 use alacritty_terminal::selection::Selection;
-use alacritty_terminal::term::{RenderableCell, SizeInfo, Term, TermMode};
+use alacritty_terminal::term::{SizeInfo, Term, TermMode};
 use alacritty_terminal::term::{MIN_COLS, MIN_SCREEN_LINES};
 
 use crate::config::font::Font;
-use crate::config::window::{Dimensions, StartupMode};
+use crate::config::window::Dimensions;
+#[cfg(not(windows))]
+use crate::config::window::StartupMode;
 use crate::config::Config;
 use crate::event::{Mouse, SearchState};
 use crate::message_bar::{MessageBuffer, MessageType};
@@ -152,14 +154,18 @@ pub struct Display {
     /// Currently highlighted URL.
     pub highlighted_url: Option<Url>,
 
-    #[cfg(not(any(target_os = "macos", windows)))]
+    #[cfg(all(feature = "wayland", not(any(target_os = "macos", windows))))]
     pub wayland_event_queue: Option<EventQueue>,
+
+    #[cfg(not(any(target_os = "macos", windows)))]
+    pub is_x11: bool,
+
+    /// UI cursor visibility for blinking.
+    pub cursor_hidden: bool,
 
     renderer: QuadRenderer,
     glyph_cache: GlyphCache,
     meter: Meter,
-    #[cfg(not(any(target_os = "macos", windows)))]
-    is_x11: bool,
 }
 
 impl Display {
@@ -182,11 +188,11 @@ impl Display {
         debug!("Estimated window size: {:?}", estimated_size);
         debug!("Estimated cell size: {} x {}", cell_width, cell_height);
 
-        #[cfg(not(any(target_os = "macos", windows)))]
+        #[cfg(all(feature = "wayland", not(any(target_os = "macos", windows))))]
         let mut wayland_event_queue = None;
 
         // Initialize Wayland event queue, to handle Wayland callbacks.
-        #[cfg(not(any(target_os = "macos", windows)))]
+        #[cfg(all(feature = "wayland", not(any(target_os = "macos", windows))))]
         if let Some(display) = event_loop.wayland_display() {
             let display = unsafe { WaylandDisplay::from_external_display(display as _) };
             wayland_event_queue = Some(display.create_event_queue());
@@ -197,14 +203,11 @@ impl Display {
             event_loop,
             &config,
             estimated_size,
-            #[cfg(not(any(target_os = "macos", windows)))]
+            #[cfg(all(feature = "wayland", not(any(target_os = "macos", windows))))]
             wayland_event_queue.as_ref(),
         )?;
 
         info!("Device pixel ratio: {}", window.dpr);
-
-        // get window properties for initializing the other subsystems.
-        let viewport_size = window.inner_size();
 
         // Create renderer.
         let mut renderer = QuadRenderer::new()?;
@@ -223,6 +226,7 @@ impl Display {
         }
 
         let padding = config.ui_config.window.padding(window.dpr);
+        let viewport_size = window.inner_size();
 
         // Create new size with at least one column and row.
         let size_info = SizeInfo::new(
@@ -237,6 +241,7 @@ impl Display {
 
         info!("Cell size: {} x {}", cell_width, cell_height);
         info!("Padding: {} x {}", size_info.padding_x(), size_info.padding_y());
+        info!("Width: {}, Height: {}", size_info.width(), size_info.height());
 
         // Update OpenGL projection.
         renderer.resize(&size_info);
@@ -251,8 +256,10 @@ impl Display {
         #[cfg(target_os = "macos")]
         set_font_smoothing(config.ui_config.font.use_thin_strokes());
 
-        #[cfg(not(any(target_os = "macos", windows)))]
+        #[cfg(all(feature = "x11", not(any(target_os = "macos", windows))))]
         let is_x11 = event_loop.is_x11();
+        #[cfg(not(any(feature = "x11", target_os = "macos", windows)))]
+        let is_x11 = false;
 
         // On Wayland we can safely ignore this call, since the window isn't visible until you
         // actually draw something into it and commit those changes.
@@ -275,12 +282,12 @@ impl Display {
         }
 
         #[allow(clippy::single_match)]
+        #[cfg(not(windows))]
         match config.ui_config.window.startup_mode {
-            StartupMode::Fullscreen => window.set_fullscreen(true),
             #[cfg(target_os = "macos")]
             StartupMode::SimpleFullscreen => window.set_simple_fullscreen(true),
-            #[cfg(not(any(target_os = "macos", windows)))]
-            StartupMode::Maximized => window.set_maximized(true),
+            #[cfg(not(target_os = "macos"))]
+            StartupMode::Maximized if is_x11 => window.set_maximized(true),
             _ => (),
         }
 
@@ -294,8 +301,9 @@ impl Display {
             highlighted_url: None,
             #[cfg(not(any(target_os = "macos", windows)))]
             is_x11,
-            #[cfg(not(any(target_os = "macos", windows)))]
+            #[cfg(all(feature = "wayland", not(any(target_os = "macos", windows))))]
             wayland_event_queue,
+            cursor_hidden: false,
         })
     }
 
@@ -433,7 +441,14 @@ impl Display {
         mods: ModifiersState,
         search_state: &SearchState,
     ) {
-        let grid_cells: Vec<RenderableCell> = terminal.renderable_cells(config).collect();
+        // Convert search match from viewport to absolute indexing.
+        let search_active = search_state.regex().is_some();
+        let viewport_match = search_state
+            .focused_match()
+            .and_then(|focused_match| terminal.grid().clamp_buffer_range_to_visible(focused_match));
+        let cursor_hidden = self.cursor_hidden || search_state.regex().is_some();
+
+        let grid_cells = terminal.renderable_cells(config, !cursor_hidden).collect::<Vec<_>>();
         let visual_bell_intensity = terminal.visual_bell.intensity();
         let background_color = terminal.background_color();
         let cursor_point = terminal.grid().cursor.point;
@@ -467,12 +482,26 @@ impl Display {
 
             self.renderer.with_api(&config.ui_config, config.cursor, &size_info, |mut api| {
                 // Iterate over all non-empty cells in the grid.
-                for cell in grid_cells {
+                for mut cell in grid_cells {
+                    // Invert the active match in vi-less search.
+                    let cell_point = Point::new(cell.line, cell.column);
+                    if cell.is_match
+                        && viewport_match
+                            .as_ref()
+                            .map_or(false, |viewport_match| viewport_match.contains(&cell_point))
+                    {
+                        let colors = config.colors.search.focused_match;
+                        let match_fg = colors.foreground().color(cell.fg, cell.bg);
+                        cell.bg = colors.background().color(cell.fg, cell.bg);
+                        cell.fg = match_fg;
+                        cell.bg_alpha = 1.0;
+                    }
+
                     // Update URL underlines.
-                    urls.update(size_info.cols(), cell);
+                    urls.update(size_info.cols(), &cell);
 
                     // Update underline/strikeout.
-                    lines.update(cell);
+                    lines.update(&cell);
 
                     // Draw the cell.
                     api.render_cell(cell, glyph_cache);
@@ -521,7 +550,7 @@ impl Display {
         }
 
         if let Some(message) = message_buffer.message() {
-            let search_offset = if search_state.regex().is_some() { 1 } else { 0 };
+            let search_offset = if search_active { 1 } else { 0 };
             let text = message.text(&size_info);
 
             // Create a new rectangle for the background.
@@ -580,12 +609,12 @@ impl Display {
 
         // Frame event should be requested before swaping buffers, since it requires surface
         // `commit`, which is done by swap buffers under the hood.
-        #[cfg(not(any(target_os = "macos", windows)))]
+        #[cfg(all(feature = "wayland", not(any(target_os = "macos", windows))))]
         self.request_frame(&self.window);
 
         self.window.swap_buffers();
 
-        #[cfg(not(any(target_os = "macos", windows)))]
+        #[cfg(all(feature = "x11", not(any(target_os = "macos", windows))))]
         if self.is_x11 {
             // On X11 `swap_buffers` does not block for vsync. However the next OpenGl command
             // will block to synchronize (this is `glClear` in Alacritty), which causes a
@@ -660,7 +689,7 @@ impl Display {
 
     /// Requst a new frame for a window on Wayland.
     #[inline]
-    #[cfg(not(any(target_os = "macos", windows)))]
+    #[cfg(all(feature = "wayland", not(any(target_os = "macos", windows))))]
     fn request_frame(&self, window: &Window) {
         let surface = match window.wayland_surface() {
             Some(surface) => surface,
@@ -687,8 +716,8 @@ fn compute_cell_size(config: &Config, metrics: &crossfont::Metrics) -> (f32, f32
     let offset_x = f64::from(config.ui_config.font.offset.x);
     let offset_y = f64::from(config.ui_config.font.offset.y);
     (
-        ((metrics.average_advance + offset_x) as f32).floor().max(1.),
-        ((metrics.line_height + offset_y) as f32).floor().max(1.),
+        (metrics.average_advance + offset_x).floor().max(1.) as f32,
+        (metrics.line_height + offset_y).floor().max(1.) as f32,
     )
 }
 

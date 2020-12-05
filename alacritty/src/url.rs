@@ -48,7 +48,7 @@ impl Url {
 pub struct Urls {
     locator: UrlLocator,
     urls: Vec<Url>,
-    scheme_buffer: Vec<RenderableCell>,
+    scheme_buffer: Vec<(Point, Rgb)>,
     last_point: Option<Point>,
     state: UrlLocation,
 }
@@ -71,15 +71,20 @@ impl Urls {
     }
 
     // Update tracked URLs.
-    pub fn update(&mut self, num_cols: Column, cell: RenderableCell) {
+    pub fn update(&mut self, num_cols: Column, cell: &RenderableCell) {
         // Convert cell to character.
-        let c = match cell.inner {
-            RenderableCellContent::Chars(chars) => chars[0],
+        let c = match &cell.inner {
+            RenderableCellContent::Chars((c, _zerowidth)) => *c,
             RenderableCellContent::Cursor(_) => return,
         };
 
         let point: Point = cell.into();
-        let end = point;
+        let mut end = point;
+
+        // Include the following wide char spacer.
+        if cell.flags.contains(Flags::WIDE_CHAR) {
+            end.col += 1;
+        }
 
         // Reset URL when empty cells have been skipped.
         if point != Point::default() && Some(point.sub(num_cols, 1)) != self.last_point {
@@ -88,8 +93,8 @@ impl Urls {
 
         self.last_point = Some(end);
 
-        // Extend current state if a wide char spacer is encountered.
-        if cell.flags.intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER) {
+        // Extend current state if a leading wide char spacer is encountered.
+        if cell.flags.intersects(Flags::LEADING_WIDE_CHAR_SPACER) {
             if let UrlLocation::Url(_, mut end_offset) = self.state {
                 if end_offset != 0 {
                     end_offset += 1;
@@ -109,9 +114,8 @@ impl Urls {
                 self.urls.push(Url { lines: Vec::new(), end_offset, num_cols });
 
                 // Push schemes into URL.
-                for scheme_cell in self.scheme_buffer.split_off(0) {
-                    let point = scheme_cell.into();
-                    self.extend_url(point, point, scheme_cell.fg, end_offset);
+                for (scheme_point, scheme_fg) in self.scheme_buffer.split_off(0) {
+                    self.extend_url(scheme_point, scheme_point, scheme_fg, end_offset);
                 }
 
                 // Push the new cell into URL.
@@ -120,7 +124,7 @@ impl Urls {
             (UrlLocation::Url(_length, end_offset), UrlLocation::Url(..)) => {
                 self.extend_url(point, end, cell.fg, end_offset);
             },
-            (UrlLocation::Scheme, _) => self.scheme_buffer.push(cell),
+            (UrlLocation::Scheme, _) => self.scheme_buffer.push((cell.into(), cell.fg)),
             (UrlLocation::Reset, _) => self.reset(),
             _ => (),
         }
@@ -196,19 +200,19 @@ mod tests {
     use super::*;
 
     use alacritty_terminal::index::{Column, Line};
-    use alacritty_terminal::term::cell::MAX_ZEROWIDTH_CHARS;
 
     fn text_to_cells(text: &str) -> Vec<RenderableCell> {
         text.chars()
             .enumerate()
             .map(|(i, c)| RenderableCell {
-                inner: RenderableCellContent::Chars([c; MAX_ZEROWIDTH_CHARS + 1]),
+                inner: RenderableCellContent::Chars((c, None)),
                 line: Line(0),
                 column: Column(i),
                 fg: Default::default(),
                 bg: Default::default(),
                 bg_alpha: 0.,
                 flags: Flags::empty(),
+                is_match: false,
             })
             .collect()
     }
@@ -223,7 +227,7 @@ mod tests {
         let mut urls = Urls::new();
 
         for cell in input {
-            urls.update(Column(num_cols), cell);
+            urls.update(Column(num_cols), &cell);
         }
 
         let url = urls.urls.first().unwrap();
@@ -239,7 +243,7 @@ mod tests {
         let mut urls = Urls::new();
 
         for cell in input {
-            urls.update(Column(num_cols), cell);
+            urls.update(Column(num_cols), &cell);
         }
 
         assert_eq!(urls.urls.len(), 3);
@@ -252,5 +256,25 @@ mod tests {
 
         assert_eq!(urls.urls[2].start().col, Column(17));
         assert_eq!(urls.urls[2].end().col, Column(21));
+    }
+
+    #[test]
+    fn wide_urls() {
+        let input = text_to_cells("test https://こんにちは (http:여보세요) ing");
+        let num_cols = input.len() + 9;
+
+        let mut urls = Urls::new();
+
+        for cell in input {
+            urls.update(Column(num_cols), &cell);
+        }
+
+        assert_eq!(urls.urls.len(), 2);
+
+        assert_eq!(urls.urls[0].start().col, Column(5));
+        assert_eq!(urls.urls[0].end().col, Column(17));
+
+        assert_eq!(urls.urls[1].start().col, Column(20));
+        assert_eq!(urls.urls[1].end().col, Column(28));
     }
 }

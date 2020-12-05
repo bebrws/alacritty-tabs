@@ -5,7 +5,35 @@ The sections should follow the order `Packaging`, `Added`, `Changed`, `Fixed` an
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## 0.6.0-dev
+## 0.7.0-dev
+
+### Added
+
+- Support for `~/` at the beginning of configuration file imports
+- New `cursor.style.blinking` option to set the default blinking state
+- New `cursor.blink_interval` option to configure the blinking frequency
+- Support for cursor blinking escapes (`CSI ? 12 h`, `CSI ? 12 l` and `CSI Ps SP q`)
+
+### Changed
+
+- Nonexistent config imports are ignored instead of raising an error
+
+### Fixed
+
+- Wide characters sometimes being cut off
+- Preserve vi mode across terminal `reset`
+- Escapes `CSI Ps b` and `CSI Ps Z` with large parameters locking up Alacritty
+
+### Removed
+
+- The following CLI arguments have been removed in favor of the `--option` flag:
+    * `--persistent-logging`
+    * `--live-config-reload`
+    * `--no-live-config-reload`
+    * `--dimensions`
+    * `--position`
+
+## 0.6.0
 
 ### Packaging
 
@@ -13,6 +41,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - The snapcraft.yaml file has been removed
 - Updated `setab`/`setaf` capabilities in `alacritty-direct` to use colons
 - WinPTY is now enabled only when targeting MSVC
+- Deprecated the WinPTY backend feature, disabling it by default
 
 ### Added
 
@@ -24,15 +53,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - CLI parameter `--option`/`-o` to override any configuration field
 - Escape sequences to report text area size in pixels (`CSI 14 t`) and in characters (`CSI 18 t`)
 - Support for single line terminals dimensions
+- Right clicking on Wayland's client side decorations will show application menu
+- Escape sequences to enable and disable window urgency hints (`CSI ? 1042 h`, `CSI ? 1042 l`)
 
 ### Changed
 
 - Cursors are now inverted when their fixed color is similar to the cell's background
-- Use working directory of active process instead of shell for SpawnNewInstance action
+- Use the working directory of the terminal foreground process, instead of the shell's working
+    directory, for `SpawnNewInstance` action
 - Fallback to normal underline for unsupported underline types in `CSI 4 : ? m` escapes
 - The user's background color is now used as the foreground for the render timer
 - Use yellow/red from the config for error and warning messages instead of fixed colors
 - Existing CLI parameters are now passed to instances spawned using `SpawnNewInstance`
+- Wayland's Client side decorations now use the search bar colors
+- Reduce memory usage by up to at least 30% with a full scrollback buffer
+- The number of zerowidth characters per cell is no longer limited to 5
+- `SpawnNewInstance` is now using the working directory of the terminal foreground process on macOS
 
 ### Fixed
 
@@ -48,6 +84,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Selection expanding over 2 characters when scrolled in history with fullwidth characters in use
 - Selection scrolling not starting when mouse is over the message bar
 - Incorrect text width calculation in message bar when the message contains multibyte characters
+- Remapped caps lock to escape not triggering escape bindings on Wayland
+- Crash when setting overly long title on Wayland
+- Switching in and out of various window states, like Fullscreen, not persisting window size on Wayland
+- Crash when providing 0 for `XCURSOR_SIZE` on Wayland
+- Gap between window and server side decorations on KWIN Wayland
+- Wayland's client side decorations not working after tty switch
+- `Fullscreen` startup mode not working on Wayland
+- Window not being rescaled when changing DPR of the current monitor on Wayland
+- Crash in some cases when pointer isn't presented upon startup on Wayland
+- IME not working on Wayland
+- Crash on startup on GNOME since its 3.37.90 version on Wayland
+- Touchpad scrolling scrolled less than it should on macOS/Wayland on scaled outputs
+- Incorrect modifiers at startup on X11
+- `Add` and `Subtract` keys are now named `NumpadAdd` and `NumpadSubtract` respectively
+- Feature checking when cross compiling between different operating systems
+- Crash when writing to the clipboard fails on Wayland
+- Crash with large negative `font.offset.x/y`
+- Visual bell getting stuck on the first frame
+- Zerowidth characters in the last column of the line
 
 ## 0.5.0
 
@@ -74,6 +129,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Unicode 13 support
 - Option to run command on bell which can be set in `bell.command`
 - Fallback to program specified in `$SHELL` variable on Linux/BSD if it is present
+- Ability to make selections while search is active
 
 ### Changed
 
@@ -94,6 +150,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - URLs are no longer highlighted without a clearly delimited scheme
 - Renamed config option `visual_bell` to `bell`
 - Moved config option `dynamic_title` to `window.dynamic_title`
+- When searching without vi mode, matches are only selected once search is cancelled
 
 ### Fixed
 
@@ -115,6 +172,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Ingoring of default FreeType properties
 - Alacritty crashing at startup when the configured font does not exist
 - Font size rounding error
+- Opening URLs while search is active
 
 ### Removed
 

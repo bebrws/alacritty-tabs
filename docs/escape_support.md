@@ -56,7 +56,8 @@ brevity.
 | `CSI h`    | PARTIAL     | Only modes `4` and `20` are supported             |
 | `CSI ? h`  | PARTIAL     | Supported modes:                                  |
 |            |             |   `1`, `3`, `6`, `7`, `12`, `25`, `1000`, `1002`  |
-|            |             |   `1004`, `1005`, `1006`, `1007`, `1049`, `2004`  |
+|            |             |   `1004`, `1005`, `1006`, `1007`, `1042`, `1049`  |
+|            |             |   `2004`                                          |
 | `CSI I`    | IMPLEMENTED |                                                   |
 | `CSI J`    | IMPLEMENTED |                                                   |
 | `CSI K`    | IMPLEMENTED |                                                   |
@@ -67,7 +68,7 @@ brevity.
 | `CSI m`    | PARTIAL     | Only singular straight underlines are supported   |
 | `CSI n`    | IMPLEMENTED |                                                   |
 | `CSI P`    | IMPLEMENTED |                                                   |
-| `CSI SP q` | PARTIAL     | No blinking support                               |
+| `CSI SP q` | IMPLEMENTED |                                                   |
 | `CSI r`    | IMPLEMENTED |                                                   |
 | `CSI S`    | IMPLEMENTED |                                                   |
 | `CSI s`    | IMPLEMENTED |                                                   |
