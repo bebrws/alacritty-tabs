@@ -518,21 +518,7 @@ impl<'a, T: EventListener, A: ActionContext<T>> Processor<'a, T, A> {
     }
 
     fn on_mouse_press(&mut self, button: MouseButton) {
-        // Handle mouse mode.
-
-        let isLeftClick = match button {
-            MouseButton::Left => true,
-            _ => false,
-        };
-
-        if isLeftClick && self.ctx.modifiers().logo() {
-            let mouse = self.ctx.mouse();
-            let mut point = self.ctx.size_info().pixels_to_coords(mouse.x, mouse.y);
-            let side = self.ctx.mouse().cell_side;
-            let wordClicked = self.ctx.find_word(point, side);
-            println!("wordClicked is {}", wordClicked);
-        }
-
+        // Handle mouse mode
         if !self.ctx.modifiers().shift() && self.ctx.mouse_mode() {
             self.ctx.mouse_mut().click_state = ClickState::None;
 
@@ -813,6 +799,30 @@ impl<'a, T: EventListener, A: ActionContext<T>> Processor<'a, T, A> {
                 },
                 ElementState::Released => self.on_mouse_release(button),
             }
+
+            let isLeftClick = match button {
+                MouseButton::Left => true,
+                _ => false,
+            };
+    
+            if isLeftClick && self.ctx.modifiers().logo() {
+                let mouse = self.ctx.mouse();
+                let mut point = self.ctx.size_info().pixels_to_coords(mouse.x, mouse.y);
+                let side = self.ctx.mouse().cell_side;
+                let wordClicked = self.ctx.find_word(point, side);
+    
+    
+                let mut msg =  match state {
+                    ElementState::Pressed => vec![b'\x1b', b'\x1b', b'M'],
+                    ElementState::Released => vec![b'\x1b', b'\x1c', b'M'],
+                };
+                
+                let mut string_vector = wordClicked.as_bytes().to_vec();
+                msg.append(&mut string_vector);
+        
+                self.ctx.write_to_pty(msg);
+            }
+
         }
     }
 

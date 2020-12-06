@@ -255,7 +255,6 @@ impl<'a, N: Notify + 'a, T: EventListener> input::ActionContext<T> for ActionCon
                 if foundPoint {
                     foundEnd = true;
                 } else {
-                    println!("restart");
                     string = String::new();  
                     if c != ' ' {
                         string.push(c.clone()); 
