@@ -5,6 +5,10 @@
 //! needs to be tracked. Additionally, we need a bit of a state machine to
 //! determine what to do when a non-modifier key is pressed.
 
+use std::fs::File;
+use std::io::prelude::*;
+use std::path::Path;
+
 use std::borrow::Cow;
 use std::cmp::{max, min, Ordering};
 use std::marker::PhantomData;
@@ -66,6 +70,7 @@ pub trait ActionContext<T: EventListener> {
     fn write_to_pty<B: Into<Cow<'static, [u8]>>>(&mut self, data: B);
     fn size_info(&self) -> SizeInfo;
     fn copy_selection(&mut self, ty: ClipboardType);
+    fn find_word(&mut self, point: Point, side: Side) -> String;
     fn start_selection(&mut self, ty: SelectionType, point: Point, side: Side);
     fn toggle_selection(&mut self, ty: SelectionType, point: Point, side: Side);
     fn update_selection(&mut self, point: Point, side: Side);
@@ -514,6 +519,20 @@ impl<'a, T: EventListener, A: ActionContext<T>> Processor<'a, T, A> {
 
     fn on_mouse_press(&mut self, button: MouseButton) {
         // Handle mouse mode.
+
+        let isLeftClick = match button {
+            MouseButton::Left => true,
+            _ => false,
+        };
+
+        if isLeftClick && self.ctx.modifiers().logo() {
+            let mouse = self.ctx.mouse();
+            let mut point = self.ctx.size_info().pixels_to_coords(mouse.x, mouse.y);
+            let side = self.ctx.mouse().cell_side;
+            let wordClicked = self.ctx.find_word(point, side);
+            println!("wordClicked is {}", wordClicked);
+        }
+
         if !self.ctx.modifiers().shift() && self.ctx.mouse_mode() {
             self.ctx.mouse_mut().click_state = ClickState::None;
 
@@ -602,6 +621,7 @@ impl<'a, T: EventListener, A: ActionContext<T>> Processor<'a, T, A> {
     /// Handle left click selection and vi mode cursor movement.
     fn on_left_click(&mut self, point: Point) {
         let side = self.ctx.mouse().cell_side;
+        
 
         match self.ctx.mouse().click_state {
             ClickState::Click => {
@@ -1132,6 +1152,8 @@ mod tests {
         fn write_to_pty<B: Into<Cow<'static, [u8]>>>(&mut self, _val: B) {}
 
         fn update_selection(&mut self, _point: Point, _side: Side) {}
+
+        fn find_word(&mut self, _point: Point, _side: Side) {}
 
         fn start_selection(&mut self, _ty: SelectionType, _point: Point, _side: Side) {}
 

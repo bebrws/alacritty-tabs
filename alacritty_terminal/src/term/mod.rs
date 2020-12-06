@@ -292,6 +292,22 @@ pub enum RenderableCellContent {
     Cursor(CursorKey),
 }
 
+impl RenderableCellContent {
+    fn is_chars(self) -> bool {
+        match self {
+            RenderableCellContent::Chars(c) => true,
+            _ => false,
+        }
+    }
+
+    pub fn get_char_or_space(self) -> char {
+        match self {
+            RenderableCellContent::Chars(c) => c.0,
+            _ => ' ',
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct RenderableCell {
     /// A _Display_ line (not necessarily an _Active_ line).
