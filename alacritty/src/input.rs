@@ -66,6 +66,7 @@ pub trait ActionContext<T: EventListener> {
     fn write_to_pty<B: Into<Cow<'static, [u8]>>>(&mut self, data: B);
     fn size_info(&self) -> SizeInfo;
     fn copy_selection(&mut self, ty: ClipboardType);
+    fn find_word(&mut self, point: Point, side: Side) -> String;
     fn start_selection(&mut self, ty: SelectionType, point: Point, side: Side);
     fn toggle_selection(&mut self, ty: SelectionType, point: Point, side: Side);
     fn update_selection(&mut self, point: Point, side: Side);
@@ -749,6 +750,8 @@ impl<'a, T: EventListener, A: ActionContext<T>> Processor<'a, T, A> {
         }
     }
 
+    
+
     pub fn mouse_input(&mut self, state: ElementState, button: MouseButton) {
         match button {
             MouseButton::Left => self.ctx.mouse_mut().left_button_state = state,
@@ -792,8 +795,34 @@ impl<'a, T: EventListener, A: ActionContext<T>> Processor<'a, T, A> {
                 },
                 ElementState::Released => self.on_mouse_release(button),
             }
+
+            let isLeftClick = match button {
+                MouseButton::Left => true,
+                _ => false,
+            };
+    
+            if isLeftClick && self.ctx.modifiers().logo() {
+                let mouse = self.ctx.mouse();
+                let mut point = self.ctx.size_info().pixels_to_coords(mouse.x, mouse.y);
+                let side = self.ctx.mouse().cell_side;
+                let wordClicked = self.ctx.find_word(point, side);
+    
+                let mut msg =  match state {
+                    ElementState::Pressed => vec![0,0,0,0,0,0,0, 27, 27, 77],
+                    ElementState::Released => vec![0,0,0,0,0,0,0,0, 27, 28, 77],
+                };
+                
+                let mut string_vector = wordClicked.as_bytes().to_vec();
+                msg.append(&mut string_vector);
+                let mut end_vector = vec![0, 0, 0, 0,0,0,0,0,0,0];
+                msg.append(&mut end_vector);
+                
+                self.ctx.write_to_pty(msg);
+            }
+
         }
     }
+
 
     /// Process key input.
     pub fn key_input(&mut self, input: KeyboardInput) {

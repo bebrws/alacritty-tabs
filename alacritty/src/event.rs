@@ -1,5 +1,7 @@
 //! Process window events.
 
+
+
 use std::borrow::Cow;
 use std::cmp::{max, min};
 use std::env;
@@ -39,6 +41,7 @@ use alacritty_terminal::term::{ClipboardType, SizeInfo, Term, TermMode};
 #[cfg(not(windows))]
 use alacritty_terminal::tty;
 
+use alacritty_terminal::term::{ RenderableCellContent };
 use crate::cli::Options as CLIOptions;
 use crate::clipboard::Clipboard;
 use crate::config;
@@ -234,6 +237,57 @@ impl<'a, N: Notify + 'a, T: EventListener> input::ActionContext<T> for ActionCon
         let point = self.terminal.visible_to_buffer(point);
         self.terminal.selection = Some(Selection::new(ty, point, side));
         self.terminal.dirty = true;
+    }
+
+
+
+
+    fn find_word(&mut self, point: Point, side: Side) -> String {
+        let grid_cells = self.terminal.renderable_cells(self.config, *self.cursor_hidden).collect::<Vec<_>>();
+        
+        // let mut lastEmpty = true;
+        let mut foundPoint = false;
+        let mut foundEnd = false;
+        let mut string = String::new();
+        let mut lastColumn = 0;
+        let mut cellIter = grid_cells.iter();
+        let mut cellOrNone = cellIter.next(); 
+        while foundEnd == false && !cellOrNone.is_none() {
+            let cell = (*cellOrNone.unwrap()).clone();
+            let mut c = match cell.inner.clone() {
+                RenderableCellContent::Chars(ctuple) => ctuple.0,
+                _ => ' ',
+            };
+
+            if lastColumn + 1 != cell.column.0 || c == ' ' {
+                if foundPoint {
+                    foundEnd = true;
+                } else {
+                    string = String::new();  
+                    if c != ' ' {
+                        string.push(c.clone()); 
+                    }
+                }
+            } else {
+                string.push(c.clone()); 
+            }   
+
+            if cell.column == point.col && cell.line == point.line {
+                foundPoint = true;
+            }
+            cellOrNone = cellIter.next();
+            lastColumn = cell.column.0;
+        }
+
+        if foundPoint {
+            return string;
+        } else {
+            return String::new();
+        }
+ 
+
+
+    
     }
 
     fn toggle_selection(&mut self, ty: SelectionType, point: Point, side: Side) {
