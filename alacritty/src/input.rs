@@ -66,6 +66,7 @@ pub trait ActionContext<T: EventListener> {
     fn write_to_pty<B: Into<Cow<'static, [u8]>>>(&mut self, data: B);
     fn size_info(&self) -> SizeInfo;
     fn copy_selection(&mut self, ty: ClipboardType);
+    fn find_word(&mut self, point: Point, side: Side) -> String;
     fn start_selection(&mut self, ty: SelectionType, point: Point, side: Side);
     fn toggle_selection(&mut self, ty: SelectionType, point: Point, side: Side);
     fn update_selection(&mut self, point: Point, side: Side);
@@ -749,6 +750,8 @@ impl<'a, T: EventListener, A: ActionContext<T>> Processor<'a, T, A> {
         }
     }
 
+    
+
     pub fn mouse_input(&mut self, state: ElementState, button: MouseButton) {
         match button {
             MouseButton::Left => self.ctx.mouse_mut().left_button_state = state,
@@ -792,8 +795,26 @@ impl<'a, T: EventListener, A: ActionContext<T>> Processor<'a, T, A> {
                 },
                 ElementState::Released => self.on_mouse_release(button),
             }
+
+            let is_left_click = match button {
+                MouseButton::Left => true,
+                _ => false,
+            };
+    
+            if is_left_click && self.ctx.modifiers().logo() {
+                let mouse = self.ctx.mouse();
+                let mut point = self.ctx.size_info().pixels_to_coords(mouse.x, mouse.y);
+                let side = self.ctx.mouse().cell_side;
+                let word_clicked = self.ctx.find_word(point, side);
+    
+                if state == ElementState::Pressed {
+                    self.ctx.write_to_pty(word_clicked.as_bytes().to_vec());
+                }
+            }
+
         }
     }
+
 
     /// Process key input.
     pub fn key_input(&mut self, input: KeyboardInput) {
