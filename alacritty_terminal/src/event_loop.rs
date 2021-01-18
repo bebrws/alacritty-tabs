@@ -22,7 +22,7 @@ use crate::thread;
 use crate::tty;
 
 /// Max bytes to read from the PTY.
-const MAX_READ: usize = 0x10_000;
+const MAX_READ: usize = u16::max_value() as usize;
 
 /// Messages that may be sent to the `EventLoop`.
 #[derive(Debug)]
@@ -342,9 +342,14 @@ where
 
                         token if token == self.pty.child_event_token() => {
                             if let Some(tty::ChildEvent::Exited) = self.pty.next_child_event() {
-                                if !self.hold {
+                                if self.hold {
+                                    // With hold enabled, make sure the PTY is drained.
+                                    let _ = self.pty_read(&mut state, &mut buf, pipe.as_mut());
+                                } else {
+                                    // Without hold, shutdown the terminal.
                                     self.terminal.lock().exit();
                                 }
+
                                 self.event_proxy.send_event(Event::Wakeup);
                                 break 'event_loop;
                             }

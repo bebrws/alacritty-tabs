@@ -22,23 +22,22 @@ use unicode_width::UnicodeWidthChar;
 #[cfg(all(feature = "wayland", not(any(target_os = "macos", windows))))]
 use wayland_client::{Display as WaylandDisplay, EventQueue};
 
-#[cfg(target_os = "macos")]
-use crossfont::set_font_smoothing;
 use crossfont::{self, Rasterize, Rasterizer};
 
 use alacritty_terminal::sync::FairMutex;
 
 use alacritty_terminal::event::{EventListener, OnResize};
-use alacritty_terminal::index::{Column, Direction, Point};
+use alacritty_terminal::grid::Dimensions as _;
+use alacritty_terminal::index::{Column, Direction, Line, Point};
 use alacritty_terminal::selection::Selection;
-use alacritty_terminal::term::{SizeInfo, Term, TermMode};
-use alacritty_terminal::term::{MIN_COLS, MIN_SCREEN_LINES};
-use alacritty_terminal::index::Line;
+use alacritty_terminal::term::{SizeInfo, Term, TermMode, MIN_COLS, MIN_SCREEN_LINES};
+
 use crate::config::font::Font;
 use crate::config::window::Dimensions;
 #[cfg(not(windows))]
 use crate::config::window::StartupMode;
 use crate::config::Config;
+use crate::cursor::IntoRects;
 use crate::event::{Mouse, SearchState};
 use crate::message_bar::{MessageBuffer, MessageType};
 use crate::meter::Meter;
@@ -255,13 +254,17 @@ impl Display {
 
         // Clear screen.
         let background_color = config.colors.primary.background;
-        renderer.with_api(&config.ui_config, config.cursor, &size_info, |api| {
+        renderer.with_api(&config.ui_config, &size_info, |api| {
             api.clear(background_color);
         });
 
         // Set subpixel anti-aliasing.
         #[cfg(target_os = "macos")]
-        set_font_smoothing(config.ui_config.font.use_thin_strokes());
+        crossfont::set_font_smoothing(config.ui_config.font.use_thin_strokes);
+
+        // Disable shadows for transparent windows on macOS.
+        #[cfg(target_os = "macos")]
+        window.set_has_shadow(config.ui_config.background_opacity() >= 1.0);
 
         #[cfg(all(feature = "x11", not(any(target_os = "macos", windows))))]
         let is_x11 = event_loop.is_x11();
@@ -273,7 +276,7 @@ impl Display {
         #[cfg(not(any(target_os = "macos", windows)))]
         if is_x11 {
             window.swap_buffers();
-            renderer.with_api(&config.ui_config, config.cursor, &size_info, |api| {
+            renderer.with_api(&config.ui_config, &size_info, |api| {
                 api.finish();
             });
         }
@@ -321,7 +324,7 @@ impl Display {
         config: &Config,
     ) -> Result<(GlyphCache, f32, f32), Error> {
         let font = config.ui_config.font.clone();
-        let rasterizer = Rasterizer::new(dpr as f32, config.ui_config.font.use_thin_strokes())?;
+        let rasterizer = Rasterizer::new(dpr as f32, config.ui_config.font.use_thin_strokes)?;
 
         // Initialize glyph cache.
         let glyph_cache = {
@@ -455,28 +458,33 @@ impl Display {
             .and_then(|focused_match| terminal.grid().clamp_buffer_range_to_visible(focused_match));
         let cursor_hidden = self.cursor_hidden || search_state.regex().is_some();
 
-        let grid_cells = terminal.renderable_cells(config, !cursor_hidden).collect::<Vec<_>>();
+        // Collect renderable content before the terminal is dropped.
+        let mut content = terminal.renderable_content(config, !cursor_hidden);
+        let mut grid_cells = Vec::new();
+        while let Some(cell) = content.next() {
+            grid_cells.push(cell);
+        }
+        let cursor = content.cursor();
+
         let visual_bell_intensity = terminal.visual_bell.intensity();
+        let display_offset = terminal.grid().display_offset();
         let background_color = terminal.background_color();
         let cursor_point = terminal.grid().cursor.point;
+        let total_lines = terminal.grid().total_lines();
         let metrics = self.glyph_cache.font_metrics();
-        let glyph_cache = &mut self.glyph_cache;
         let size_info = self.size_info;
 
         let selection = !terminal.selection.as_ref().map(Selection::is_empty).unwrap_or(true);
         let mouse_mode = terminal.mode().intersects(TermMode::MOUSE_MODE)
             && !terminal.mode().contains(TermMode::VI);
 
-        let vi_mode_cursor = if terminal.mode().contains(TermMode::VI) {
-            Some(terminal.vi_mode_cursor)
-        } else {
-            None
-        };
+        let vi_mode = terminal.mode().contains(TermMode::VI);
+        let vi_mode_cursor = if vi_mode { Some(terminal.vi_mode_cursor) } else { None };
 
         // Drop terminal as early as possible to free lock.
         drop(terminal);
 
-        self.renderer.with_api(&config.ui_config, config.cursor, &size_info, |api| {
+        self.renderer.with_api(&config.ui_config, &size_info, |api| {
             api.clear(background_color);
         });
 
@@ -487,7 +495,8 @@ impl Display {
         {
             let _sampler = self.meter.sampler();
 
-            self.renderer.with_api(&config.ui_config, config.cursor, &size_info, |mut api| {
+            let glyph_cache = &mut self.glyph_cache;
+            self.renderer.with_api(&config.ui_config, &size_info, |mut api| {
                 // Iterate over all non-empty cells in the grid.
                 for mut cell in grid_cells {
                     cell.line += 1; // Leave the first line open for the tab list
@@ -496,11 +505,11 @@ impl Display {
                     if cell.is_match
                         && viewport_match
                             .as_ref()
-                            .map_or(false, |viewport_match| viewport_match.contains(&cell_point))
+                            .map_or(false, |viewport_match| viewport_match.contains(&cell.point()))
                     {
                         let colors = config.colors.search.focused_match;
-                        let match_fg = colors.foreground().color(cell.fg, cell.bg);
-                        cell.bg = colors.background().color(cell.fg, cell.bg);
+                        let match_fg = colors.foreground.color(cell.fg, cell.bg);
+                        cell.bg = colors.background.color(cell.fg, cell.bg);
                         cell.fg = match_fg;
                         cell.bg_alpha = 1.0;
                     }
@@ -537,10 +546,25 @@ impl Display {
             }
         }
 
-        // Highlight URLs at the vi mode cursor position.
         if let Some(vi_mode_cursor) = vi_mode_cursor {
-            if let Some(url) = self.urls.find_at(vi_mode_cursor.point) {
+            // Highlight URLs at the vi mode cursor position.
+            let vi_mode_point = vi_mode_cursor.point;
+            if let Some(url) = self.urls.find_at(vi_mode_point) {
                 rects.append(&mut url.rects(&metrics, &size_info));
+            }
+
+            // Indicate vi mode by showing the cursor's position in the top right corner.
+            let line = size_info.screen_lines() + display_offset - vi_mode_point.line - 1;
+            self.draw_line_indicator(config, &size_info, total_lines, Some(vi_mode_point), line.0);
+        } else if search_active {
+            // Show current display offset in vi-less search to indicate match position.
+            self.draw_line_indicator(config, &size_info, total_lines, None, display_offset);
+        }
+
+        // Push the cursor rects for rendering.
+        if let Some(cursor) = cursor {
+            for rect in cursor.rects(&size_info, config.cursor.thickness()) {
+                rects.push(rect);
             }
         }
 
@@ -569,6 +593,10 @@ impl Display {
                 0
             }
         };
+
+        let glyph_cache = &mut self.glyph_cache;
+
+
         let tab_min = 0;
         let mut tab_max = tab_manager.tabs.len() - 1;
         
@@ -585,9 +613,9 @@ impl Display {
         }
 
         tab_string_location = 0;
-        
-        self.renderer.with_api(&config.ui_config, config.cursor, &size_info, |mut api| {
-            api.render_string_column_offset(glyph_cache,  Line(0),tab_string_location, &tabs_string, config.colors.primary.tabs, None);
+        let p: Point = Point::new(Line(0), Column(tab_string_location));
+        self.renderer.with_api(&config.ui_config, &size_info, |mut api| {
+            api.render_string(glyph_cache, p, config.colors.primary.tabs, config.colors.primary.background, &tabs_string);
         });
 
         if let Some(message) = message_buffer.message() {
@@ -598,13 +626,13 @@ impl Display {
             let start_line = size_info.screen_lines() + search_offset;
             let y = size_info.cell_height().mul_add(start_line.0 as f32, size_info.padding_y());
 
-            let color = match message.ty() {
-                MessageType::Error => config.colors.normal().red,
-                MessageType::Warning => config.colors.normal().yellow,
+            let bg = match message.ty() {
+                MessageType::Error => config.colors.normal.red,
+                MessageType::Warning => config.colors.normal.yellow,
             };
 
             let message_bar_rect =
-                RenderRect::new(0., y, size_info.width(), size_info.height() - y, color, 1.);
+                RenderRect::new(0., y, size_info.width(), size_info.height() - y, bg, 1.);
 
             // Push message_bar in the end, so it'll be above all other content.
             rects.push(message_bar_rect);
@@ -615,8 +643,9 @@ impl Display {
             // Relay messages to the user.
             let fg = config.colors.primary.background;
             for (i, message_text) in text.iter().enumerate() {
-                self.renderer.with_api(&config.ui_config, config.cursor, &size_info, |mut api| {
-                    api.render_string(glyph_cache, start_line + i, &message_text, fg, None);
+                let point = Point::new(start_line + i, Column(0));
+                self.renderer.with_api(&config.ui_config, &size_info, |mut api| {
+                    api.render_string(glyph_cache, point, fg, bg, &message_text);
                 });
             }
         } else {
@@ -660,7 +689,7 @@ impl Display {
             // On X11 `swap_buffers` does not block for vsync. However the next OpenGl command
             // will block to synchronize (this is `glClear` in Alacritty), which causes a
             // permanent one frame delay.
-            self.renderer.with_api(&config.ui_config, config.cursor, &size_info, |api| {
+            self.renderer.with_api(&config.ui_config, &size_info, |api| {
                 api.finish();
             });
         }
@@ -705,10 +734,12 @@ impl Display {
         // Assure text length is at least num_cols.
         let text = format!("{:<1$}", text, num_cols);
 
+        let point = Point::new(size_info.screen_lines(), Column(0));
         let fg = config.colors.search_bar_foreground();
         let bg = config.colors.search_bar_background();
-        self.renderer.with_api(&config.ui_config, config.cursor, &size_info, |mut api| {
-            api.render_string(glyph_cache, size_info.screen_lines(), &text, fg, Some(bg));
+
+        self.renderer.with_api(&config.ui_config, &size_info, |mut api| {
+            api.render_string(glyph_cache, point, fg, bg, &text);
         });
     }
 
@@ -717,15 +748,41 @@ impl Display {
         if !config.ui_config.debug.render_timer {
             return;
         }
+
         let glyph_cache = &mut self.glyph_cache;
 
         let timing = format!("{:.3} usec", self.meter.average());
+        let point = Point::new(size_info.screen_lines() - 2, Column(0));
         let fg = config.colors.primary.background;
-        let bg = config.colors.normal().red;
+        let bg = config.colors.normal.red;
 
-        self.renderer.with_api(&config.ui_config, config.cursor, &size_info, |mut api| {
-            api.render_string(glyph_cache, size_info.screen_lines() - 2, &timing[..], fg, Some(bg));
+        self.renderer.with_api(&config.ui_config, &size_info, |mut api| {
+            api.render_string(glyph_cache, point, fg, bg, &timing);
         });
+    }
+
+    /// Draw an indicator for the position of a line in history.
+    fn draw_line_indicator(
+        &mut self,
+        config: &Config,
+        size_info: &SizeInfo,
+        total_lines: usize,
+        vi_mode_point: Option<Point>,
+        line: usize,
+    ) {
+        let text = format!("[{}/{}]", line, total_lines - 1);
+        let column = Column(size_info.cols().0.saturating_sub(text.len()));
+        let colors = &config.colors;
+        let fg = colors.line_indicator.foreground.unwrap_or(colors.primary.background);
+        let bg = colors.line_indicator.background.unwrap_or(colors.primary.foreground);
+
+        // Do not render anything if it would obscure the vi mode cursor.
+        if vi_mode_point.map_or(true, |point| point.line.0 != 0 || point.col < column) {
+            let glyph_cache = &mut self.glyph_cache;
+            self.renderer.with_api(&config.ui_config, &size_info, |mut api| {
+                api.render_string(glyph_cache, Point::new(Line(0), column), fg, bg, &text);
+            });
+        }
     }
 
     /// Requst a new frame for a window on Wayland.

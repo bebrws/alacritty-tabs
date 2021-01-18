@@ -9,8 +9,10 @@ use std::convert::TryFrom;
 use std::mem;
 use std::ops::{Bound, Range, RangeBounds};
 
-use crate::grid::Dimensions;
+use crate::ansi::CursorShape;
+use crate::grid::{Dimensions, Grid, GridCell};
 use crate::index::{Column, Line, Point, Side};
+use crate::term::cell::Flags;
 use crate::term::Term;
 
 /// A Point and side within that point.
@@ -42,14 +44,67 @@ impl<L> SelectionRange<L> {
         Self { start, end, is_block }
     }
 
-    pub fn contains(&self, col: Column, line: L) -> bool
+    /// Check if a point lies within the selection.
+    pub fn contains(&self, point: Point<L>) -> bool
     where
         L: PartialEq + PartialOrd,
     {
-        self.start.line <= line
-            && self.end.line >= line
-            && (self.start.col <= col || (self.start.line != line && !self.is_block))
-            && (self.end.col >= col || (self.end.line != line && !self.is_block))
+        self.start.line <= point.line
+            && self.end.line >= point.line
+            && (self.start.col <= point.col || (self.start.line != point.line && !self.is_block))
+            && (self.end.col >= point.col || (self.end.line != point.line && !self.is_block))
+    }
+}
+
+impl SelectionRange<Line> {
+    /// Check if the cell at a point is part of the selection.
+    pub fn contains_cell<T>(
+        &self,
+        grid: &Grid<T>,
+        point: Point,
+        cursor_point: Point,
+        cursor_shape: CursorShape,
+    ) -> bool
+    where
+        T: GridCell,
+    {
+        // Do not invert block cursor at selection boundaries.
+        if cursor_shape == CursorShape::Block
+            && cursor_point == point
+            && (self.start == point
+                || self.end == point
+                || (self.is_block
+                    && ((self.start.line == point.line && self.end.col == point.col)
+                        || (self.end.line == point.line && self.start.col == point.col))))
+        {
+            return false;
+        }
+
+        // Point itself is selected.
+        if self.contains(point) {
+            return true;
+        }
+
+        let num_cols = grid.cols();
+
+        // Convert to absolute coordinates to adjust for the display offset.
+        let buffer_point = grid.visible_to_buffer(point);
+        let cell = &grid[buffer_point];
+
+        // Check if wide char's spacers are selected.
+        if cell.flags().contains(Flags::WIDE_CHAR) {
+            let prev = point.sub(num_cols, 1);
+            let buffer_prev = grid.visible_to_buffer(prev);
+            let next = point.add(num_cols, 1);
+
+            // Check trailing spacer.
+            self.contains(next)
+                // Check line-wrapping, leading spacer.
+                || (grid[buffer_prev].flags().contains(Flags::LEADING_WIDE_CHAR_SPACER)
+                    && self.contains(prev))
+        } else {
+            false
+        }
     }
 }
 
@@ -255,8 +310,8 @@ impl Selection {
         match self.ty {
             SelectionType::Simple => self.range_simple(start, end, num_cols),
             SelectionType::Block => self.range_block(start, end),
-            SelectionType::Semantic => Self::range_semantic(term, start.point, end.point),
-            SelectionType::Lines => Self::range_lines(term, start.point, end.point),
+            SelectionType::Semantic => Some(Self::range_semantic(term, start.point, end.point)),
+            SelectionType::Lines => Some(Self::range_lines(term, start.point, end.point)),
         }
     }
 
@@ -294,7 +349,7 @@ impl Selection {
         term: &Term<T>,
         mut start: Point<usize>,
         mut end: Point<usize>,
-    ) -> Option<SelectionRange> {
+    ) -> SelectionRange {
         if start == end {
             if let Some(matching) = term.bracket_search(start) {
                 if (matching.line == start.line && matching.col < start.col)
@@ -305,25 +360,25 @@ impl Selection {
                     end = matching;
                 }
 
-                return Some(SelectionRange { start, end, is_block: false });
+                return SelectionRange { start, end, is_block: false };
             }
         }
 
         start = term.semantic_search_left(start);
         end = term.semantic_search_right(end);
 
-        Some(SelectionRange { start, end, is_block: false })
+        SelectionRange { start, end, is_block: false }
     }
 
     fn range_lines<T>(
         term: &Term<T>,
         mut start: Point<usize>,
         mut end: Point<usize>,
-    ) -> Option<SelectionRange> {
+    ) -> SelectionRange {
         start = term.line_search_left(start);
         end = term.line_search_right(end);
 
-        Some(SelectionRange { start, end, is_block: false })
+        SelectionRange { start, end, is_block: false }
     }
 
     fn range_simple(

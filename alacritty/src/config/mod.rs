@@ -2,7 +2,7 @@ use std::fmt::{self, Display, Formatter};
 use std::path::PathBuf;
 use std::{env, fs, io};
 
-use log::{error, info, warn};
+use log::{error, info};
 use serde::Deserialize;
 use serde_yaml::mapping::Mapping;
 use serde_yaml::Value;
@@ -20,7 +20,7 @@ mod bindings;
 mod mouse;
 
 use crate::cli::Options;
-pub use crate::config::bindings::{Action, Binding, Key, ViAction};
+pub use crate::config::bindings::{Action, Binding, BindingMode, Key, SearchAction, ViAction};
 #[cfg(test)]
 pub use crate::config::mouse::{ClickHandler, Mouse};
 use crate::config::ui_config::UIConfig;
@@ -68,7 +68,7 @@ impl Display for Error {
                 write!(f, "Unable to read $HOME environment variable: {}", err)
             },
             Error::Io(err) => write!(f, "Error reading config file: {}", err),
-            Error::Yaml(err) => write!(f, "Problem with config: {}", err),
+            Error::Yaml(err) => write!(f, "Config error: {}", err),
         }
     }
 }
@@ -100,17 +100,21 @@ pub fn load(options: &Options) -> Config {
     let config_options = options.config_options().clone();
     let config_path = options.config_path().or_else(installed_config);
 
-    if config_path.is_none() {
-        info!(target: LOG_TARGET_CONFIG, "No config file found; using default");
-    }
-
     // Load the config using the following fallback behavior:
     //  - Config path + CLI overrides
     //  - CLI overrides
     //  - Default
     let mut config = config_path
-        .and_then(|config_path| load_from(&config_path, config_options.clone()).ok())
-        .unwrap_or_else(|| Config::deserialize(config_options).unwrap_or_default());
+        .as_ref()
+        .and_then(|config_path| load_from(config_path, config_options.clone()).ok())
+        .unwrap_or_else(|| {
+            let mut config = Config::deserialize(config_options).unwrap_or_default();
+            match config_path {
+                Some(config_path) => config.ui_config.config_paths.push(config_path),
+                None => info!(target: LOG_TARGET_CONFIG, "No config file found; using default"),
+            }
+            config
+        });
 
     // Override config with CLI options.
     options.override_config(&mut config);
@@ -152,8 +156,6 @@ fn read_config(path: &PathBuf, cli_config: Value) -> Result<Config> {
     // Deserialize to concrete type.
     let mut config = Config::deserialize(config_value)?;
     config.ui_config.config_paths = config_paths;
-
-    print_deprecation_warnings(&config);
 
     Ok(config)
 }
@@ -228,8 +230,7 @@ fn load_imports(config: &Value, config_paths: &mut Vec<PathBuf>, recursion_limit
         }
 
         if !path.exists() {
-            info!(target: LOG_TARGET_CONFIG, "Skipping importing config; not found:");
-            info!(target: LOG_TARGET_CONFIG, "  {:?}", path.display());
+            info!(target: LOG_TARGET_CONFIG, "Config import not found:\n  {:?}", path.display());
             continue;
         }
 
@@ -282,56 +283,6 @@ fn installed_config() -> Option<PathBuf> {
 #[cfg(windows)]
 fn installed_config() -> Option<PathBuf> {
     dirs::config_dir().map(|path| path.join("alacritty\\alacritty.yml")).filter(|new| new.exists())
-}
-
-fn print_deprecation_warnings(config: &Config) {
-    if config.scrolling.faux_multiplier().is_some() {
-        warn!(
-            target: LOG_TARGET_CONFIG,
-            "Config scrolling.faux_multiplier is deprecated; the alternate scroll escape can now \
-             be used to disable it and `scrolling.multiplier` controls the number of scrolled \
-             lines"
-        );
-    }
-
-    if config.scrolling.auto_scroll.is_some() {
-        warn!(
-            target: LOG_TARGET_CONFIG,
-            "Config scrolling.auto_scroll has been removed and is now always disabled, it can be \
-             safely removed from the config"
-        );
-    }
-
-    if config.tabspaces.is_some() {
-        warn!(
-            target: LOG_TARGET_CONFIG,
-            "Config tabspaces has been removed and is now always 8, it can be safely removed from \
-             the config"
-        );
-    }
-
-    if config.visual_bell.is_some() {
-        warn!(
-            target: LOG_TARGET_CONFIG,
-            "Config visual_bell has been deprecated; please use bell instead"
-        )
-    }
-
-    if config.ui_config.dynamic_title.is_some() {
-        warn!(
-            target: LOG_TARGET_CONFIG,
-            "Config dynamic_title is deprecated; please use window.dynamic_title instead",
-        )
-    }
-
-    #[cfg(all(windows, not(feature = "winpty")))]
-    if config.winpty_backend {
-        warn!(
-            target: LOG_TARGET_CONFIG,
-            "Config winpty_backend is deprecated and requires a compilation flag; it should be \
-             removed from the config",
-        )
-    }
 }
 
 #[cfg(test)]
