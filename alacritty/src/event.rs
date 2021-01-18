@@ -904,28 +904,27 @@ impl<'a> ActionContext<'a> {
         // The viewport reset logic is only needed for vi mode, since without it our origin is
         // always at the current display offset instead of at the vi cursor position which we need
         // to recover to.
-        tm_cl!(self.tab_manager, terminal, {
-            if !terminal.mode().contains(TermMode::VI) {
-                return;
-            }
-        });
+        
+        if !terminal.mode().contains(TermMode::VI) {
+            return;
+        }
+    
 
         // Reset display offset.
-        tm_cl!(self.tab_manager, terminal, {
-            terminal.scroll_display(Scroll::Delta(self.search_state.display_offset_delta));
-        });
+        
+        terminal.scroll_display(Scroll::Delta(self.search_state.display_offset_delta));
+        
         self.search_state.display_offset_delta = 0;
 
         // Clear focused match.
         self.search_state.focused_match = None;
 
         // Reset vi mode cursor.
-        tm_cl!(self.tab_manager, terminal, {
+        
         let mut origin = self.search_state.origin;
         origin.line = min(origin.line, terminal.screen_lines() - 1);
         origin.col = min(origin.col, terminal.cols() - 1);
-            terminal.vi_mode_cursor.point = origin;
-        });
+        terminal.vi_mode_cursor.point = origin;
     }
     /// Reset terminal to the state before search was started.
     fn search_reset_state(&mut self) {
