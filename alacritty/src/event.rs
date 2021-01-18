@@ -659,7 +659,7 @@ impl<'a> input::ActionContext<EventProxy> for ActionContext<'a> {
 
             if terminal.mode().contains(TermMode::VI) {
                 // Recover pre-search state in vi mode.
-                self.search_reset_state(terminal);
+                self.search_reset_state_wt(terminal);
             } else if let Some(focused_match) = &self.search_state.focused_match {
                 // Create a selection for the focused match.
                 let start = terminal.grid().clamp_buffer_to_visible(*focused_match.start());
@@ -673,7 +673,7 @@ impl<'a> input::ActionContext<EventProxy> for ActionContext<'a> {
     }
 
     #[inline]
-    fn search_input(&mut self, c: char) {
+    fn search_input_wt(&mut self, c: char, terminal: &mut Term<EventProxy>) {
         match self.search_state.history_index {
             Some(0) => (),
             // When currently in history, replace active regex with history on change.
@@ -696,15 +696,22 @@ impl<'a> input::ActionContext<EventProxy> for ActionContext<'a> {
             _ => return,
         }
 
-        tm_cl!(self.tab_manager, terminal, {
+        
  
             if !terminal.mode().contains(TermMode::VI) {
                 // Clear selection so we do not obstruct any matches.
                 terminal.selection = None;
             }
-        });
+        
 
-        self.update_search();
+        self.update_search_wt(terminal);
+    }
+
+    #[inline]
+    fn search_input(&mut self, c: char) {
+        tm_cl!(self.tab_manager, terminal, {
+            self.search_input_wt(c, terminal);
+        });
     }
 
     /// Go to the previous regex in the search history.
@@ -877,7 +884,7 @@ impl<'a> ActionContext<'a> {
 
         if regex.is_empty() {
             // Stop search if there's nothing to search for.
-            self.search_reset_state(terminal);
+            self.search_reset_state_wt(terminal);
             terminal.cancel_search();
         } else {
             // Create terminal search from the new regex string.
@@ -890,8 +897,7 @@ impl<'a> ActionContext<'a> {
         terminal.dirty = true;
     }
 
-    /// Reset terminal to the state before search was started.
-    fn search_reset_state(&mut self, terminal: &mut Term<EventProxy>) {
+    fn search_reset_state_wt(&mut self, terminal: &mut Term<EventProxy>) {
         // Unschedule pending timers.
         self.scheduler.unschedule(TimerId::DelayedSearch);
 
@@ -919,6 +925,12 @@ impl<'a> ActionContext<'a> {
         origin.line = min(origin.line, terminal.screen_lines() - 1);
         origin.col = min(origin.col, terminal.cols() - 1);
             terminal.vi_mode_cursor.point = origin;
+        });
+    }
+    /// Reset terminal to the state before search was started.
+    fn search_reset_state(&mut self) {
+        tm_cl!(self.tab_manager, terminal, {
+            self.search_reset_state_wt(terminal);
         });
     }
 
@@ -956,7 +968,7 @@ impl<'a> ActionContext<'a> {
                 self.scheduler.unschedule(TimerId::DelayedSearch);
             },
             // Reset viewport only when we know there is no match, to prevent unnecessary jumping.
-            None if limit.is_none() => self.search_reset_state(terminal),
+            None if limit.is_none() => self.search_reset_state_wt(terminal),
             None => {
                 // Schedule delayed search if we ran into our search limit.
                 if !self.scheduler.scheduled(TimerId::DelayedSearch) {

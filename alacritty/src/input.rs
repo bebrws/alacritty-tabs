@@ -119,6 +119,7 @@ pub trait ActionContext<T: EventListener> {
     fn confirm_search_wt(&mut self, terminal: &mut Term<EventProxy>);
     fn cancel_search(&mut self);
     fn search_input(&mut self, c: char);
+    fn search_input_wt(&mut self, c: char, terminal: &mut Term<EventProxy>);
     fn search_pop_word(&mut self);
     fn search_history_previous(&mut self);
     fn search_history_next(&mut self);
@@ -568,9 +569,9 @@ impl<'a, T: EventListener, A: ActionContext<T>> Processor<'a, T, A> {
         self.ctx.mouse_mut().block_url_launcher = true;
     tm_cl!(self.ctx.tab_manager(), terminal, {
         
-        if (lmb_pressed || rmb_pressed) && (self.ctx.modifiers().shift() || !self.ctx.mouse_mode())
+        if (lmb_pressed || rmb_pressed) && (self.ctx.modifiers().shift() || !self.ctx.mouse_mode_wt(terminal))
         {
-            self.ctx.update_selection(point, cell_side);
+            self.ctx.update_selection_wt(point, cell_side, terminal);
         } else if cell_changed
             && point.line < terminal.screen_lines()
             && terminal.mode().intersects(TermMode::MOUSE_MOTION | TermMode::MOUSE_DRAG)
@@ -1081,13 +1082,15 @@ impl<'a, T: EventListener, A: ActionContext<T>> Processor<'a, T, A> {
         let suppress_chars = *self.ctx.suppress_chars();
         let search_active = self.ctx.search_active();
         tm_cl!(self.ctx.tab_manager(), terminal, {
-        if suppress_chars || terminal.mode().contains(TermMode::VI) || search_active {
+            let is_vi_mode = terminal.mode().contains(TermMode::VI);
+        });
+        if suppress_chars || is_vi_mode || search_active {
             if search_active && !suppress_chars {
                 self.ctx.search_input(c);
             }
             return;
         }
-        });
+        
 
         self.ctx.on_typing_start();
 
@@ -1377,6 +1380,8 @@ mod tests {
         fn cancel_search(&mut self) {}
 
         fn search_input(&mut self, _c: char) {}
+
+        fn search_input_wt(&mut self, c: char, terminal: &mut Term<EventProxy>) {}
 
         fn search_pop_word(&mut self) {}
 
