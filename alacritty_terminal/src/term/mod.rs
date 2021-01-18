@@ -2,7 +2,7 @@
 
 use std::cmp::{max, min};
 use std::ops::{Index, IndexMut, Range};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 use std::{io, mem, ptr, str};
 

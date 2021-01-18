@@ -12,7 +12,7 @@ use std::{
 };
 
 use anyhow::Result;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use std::io::Write;
@@ -85,9 +85,9 @@ pub enum Msg {
 }
 
 pub struct TabManager {
-    selected_tab: Option<usize>,
-    pub tabs: Vec<Tab>,
-    pub size: Option<SizeInfo>,
+    selected_tab: RwLock<Option<usize>>,
+    pub tabs: RwLock<Vec<Tab>>,
+    pub size: RwLock<Option<SizeInfo>>,
     pub event_proxy: crate::event::EventProxy,
     pub config: Config,
     pub last_update: std::time::Instant,
@@ -96,9 +96,9 @@ pub struct TabManager {
 impl TabManager {
     pub fn new(event_proxy: crate::event::EventProxy, config: Config) -> TabManager {
         let mut tm = Self {
-            selected_tab: None,
-            tabs: Vec::new(),
-            size: None,
+            selected_tab: RwLock::new(None),
+            tabs: RwLock::new(Vec::new()),
+            size: RwLock::new(None),
             event_proxy,
             config,
             last_update: Instant::now(),
@@ -107,10 +107,13 @@ impl TabManager {
         return tm;
     }
 
-    pub fn resize(&mut self, sz: SizeInfo) {
-        self.size = Some(sz);
+    pub fn resize(&self, sz: SizeInfo) {
+        let mut size_guard = self.size.write().unwrap();
+        let mut size  = &mut *size_guard;
+        *size = Some(sz);
+         drop(size_guard);
 
-        let tab_r = &mut self.tabs;
+        let tab_r = &*self.tabs.read().unwrap();
 
         for tab in tab_r.into_iter() {
             let terminal_mutex = tab.terminal.clone();
@@ -130,13 +133,22 @@ impl TabManager {
     }
 
     pub fn set_size(&mut self, size: SizeInfo) {
-        self.size = Some(size.clone());
+        let mut size_guard = self.size.write().unwrap();
+        let mut size_mut  = &mut *size_guard;
+        let size_clone = size.clone();
+        *size_mut = Some(size_clone);
+         drop(size_guard);
     }
 
+    #[inline]
+    pub fn num_tabs(&self) -> usize {
+        let tabs = &*self.tabs.read().unwrap();
+        tabs.len()
+    }
     pub fn get_next_tab(&mut self) -> usize {
-        match self.selected_tab {
+        match self.selected_tab_idx() {
             Some(idx) => {
-                if idx + 1 >= self.tabs.len() {
+                if idx + 1 >= self.num_tabs()  {
                     0
                 } else {
                     idx + 1
@@ -146,14 +158,14 @@ impl TabManager {
         }
     }
 
-    pub fn new_tab(&mut self) -> Result<usize> {
-        let tab_idx = match self.selected_tab {
+    pub fn new_tab(&self) -> Result<usize> {
+        let tab_idx = match self.selected_tab_idx() {
             Some(idx) => idx + 1,
             None => 0,
         };
         info!("Creating new tab {}\n", tab_idx);
         info!("Default shell {}\n", DEFAULT_SHELL);
-        let szinfo = self.size.unwrap();
+        let szinfo = (*self.size.read().unwrap()).unwrap();
         let new_tab = Tab::new(
             DEFAULT_SHELL,
             szinfo.clone(),
@@ -170,10 +182,14 @@ impl TabManager {
         drop(pty_guard);
 
         let terminal_arc = new_tab.terminal.clone();
-        self.tabs.push(new_tab);
+        
+        let mut tabs_guard = self.tabs.write().unwrap();
+        let mut tabs = &mut *tabs_guard;
+        tabs.push(new_tab);
+        drop(tabs_guard);
 
-        if self.tabs.len() == 1 {
-            self.selected_tab = Some(0);
+        if self.num_tabs() == 1 {
+            self.set_selected_tab(0);
         }
 
         info!("Inserted and selected new tab {}\n", tab_idx);
@@ -221,19 +237,26 @@ impl TabManager {
         Ok(tab_idx)
     }
 
-    pub fn remove_selected_tab(&mut self) {
-        match self.selected_tab {
+    fn set_selected_tab(&self, idx: usize) {
+        let mut wg = self.selected_tab.write().unwrap();
+        let mut sel_tab = &mut *wg;
+        *sel_tab = Some(idx);
+        drop(wg);
+    }
+
+    pub fn remove_selected_tab(&self) {
+        match self.selected_tab_idx() {
             Some(idx) => {
-                self.tabs.remove(idx);
+                let tabs_guard = self.tabs.write().unwrap().remove(idx);
             },
             None => {},
         };
 
-        if self.tabs.len() == 0 {
+        if self.num_tabs() == 0 {
             match self.new_tab() {
                 Ok(idx) => {
                     // println!("Creating new tab as removed last tab, selected is 0");
-                    self.selected_tab = Some(0);
+                    self.set_selected_tab(0);
                 },
                 Err(e) => {
                     // println!("Error creating new tab");
@@ -241,21 +264,27 @@ impl TabManager {
             }
         } else {
             let next_idx = self.next_tab_idx().unwrap();
-            if next_idx >= self.tabs.len() {
-                // println!("Invalid next selected tab is {}", self.tabs.len() - 1);
-                self.selected_tab = Some(self.tabs.len() - 1);
+            if next_idx >= self.num_tabs() {
+                // println!("Invalid next selected tab is {}", self.num_tabs() - 1);
+                self.set_selected_tab(self.num_tabs() - 1);
             } else {
                 // println!("Next selected tab is {}", next_idx);
-                self.selected_tab = Some(next_idx);
+                self.set_selected_tab(next_idx);
             }
         }
     }
 
-    pub fn selected_tab(&mut self) -> Option<&Tab> {
-        match self.selected_tab {
-            Some(sel_idx) => self.tabs.get(sel_idx),
+    pub fn selected_tab_arc(&self) -> Arc<Tab> {
+        match self.selected_tab_idx() {
+            Some(sel_idx) => {
+                let tabs_guard = self.tabs.read().unwrap();
+                let tabs = & *tabs_guard;
+                let tab = tabs.get(sel_idx).unwrap();
+                let tab_clone = tab.clone();
+                Arc::new(tab_clone)
+            },
             None => {
-                if self.tabs.len() == 0 {
+                if self.num_tabs() == 0 {
                     match self.new_tab() {
                         Ok(idx) => {
                             // println!("Created new tab {}", idx);
@@ -265,17 +294,23 @@ impl TabManager {
                         },
                     }
                 }
-                self.selected_tab = Some(0);
-                self.tabs.get(0)
+                self.set_selected_tab(0);
+                let tabs_guard = self.tabs.read().unwrap();
+                let tabs = & *tabs_guard;
+                let tab = tabs.get(0).unwrap().clone(); 
+                Arc::new(tab)
             },
         }
     }
 
-    pub fn selected_tab_mut(&mut self) -> Option<&mut Tab> {
-        match self.selected_tab {
-            Some(sel_idx) => self.tabs.get_mut(sel_idx),
+    pub fn selected_tab_mut(&mut self) -> &mut Tab {
+        match self.selected_tab_idx() {
+            Some(sel_idx) => {
+                let mut tabs = self.tabs.get_mut().unwrap();
+                tabs.get_mut(sel_idx).unwrap()
+            },
             None => {
-                if self.tabs.len() == 0 {
+                if self.num_tabs() == 0 {
                     match self.new_tab() {
                         Ok(idx) => {
                             // println!("Created new tab {}", idx);
@@ -285,40 +320,30 @@ impl TabManager {
                         },
                     }
                 }
-                self.selected_tab = Some(0);
-                self.tabs.get_mut(0)
+                self.set_selected_tab(0);
+                let mut tabs = self.tabs.get_mut().unwrap();
+                tabs.get_mut(0).unwrap()
             },
         }
     }
 
-    pub fn select_tab(&mut self, idx: usize) -> Option<usize> {
-        match self.tabs.get(idx) {
-            Some(current_tab) => {
-                let new_sz = self.size.clone();
-
-                self.selected_tab = Some(idx);
-
-                let tab: &mut Tab = self.selected_tab_mut().expect("existed during match");
-
-                // tab.resize(new_sz);
-                // tab.mark_dirty();
-                Some(idx)
-            },
-            None => None,
-        }
+    pub fn select_tab(& self, idx: usize) -> Option<usize> {
+        self.set_selected_tab(idx);
+        self.selected_tab_idx()
     }
 
+    #[inline]
     pub fn selected_tab_idx(&self) -> Option<usize> {
-        self.selected_tab
+        *self.selected_tab.read().unwrap()
     }
 
     /// Get index of next oldest tab.
     pub fn next_tab_idx(&self) -> Option<usize> {
-        match self.selected_tab {
+        match self.selected_tab_idx() {
             Some(idx) => {
-                if self.tabs.len() == 0 {
+                if self.num_tabs() == 0 {
                     None
-                } else if idx + 1 >= self.tabs.len() {
+                } else if idx + 1 >= self.num_tabs() {
                     Some(0)
                 } else {
                     Some(idx + 1)
@@ -330,11 +355,11 @@ impl TabManager {
 
     /// Get index of next older tab.
     pub fn prev_tab_idx(&self) -> Option<usize> {
-        match self.selected_tab {
+        match self.selected_tab_idx() {
             Some(idx) => {
                 if idx == 0 {
-                    if self.tabs.len() > 1 {
-                        Some(self.tabs.len() - 1)
+                    if self.num_tabs() > 1 {
+                        Some(self.num_tabs() - 1)
                     } else {
                         Some(0)
                     }
@@ -355,12 +380,12 @@ impl TabManager {
     /// Get index of oldest tab.
     pub fn last_tab_idx(&self) -> Option<usize> {
         // Next back will iterate back around to the last value
-        Some(self.tabs.len())
+        Some(self.num_tabs())
     }
 
     /// Receive stdin for the active `Window`.
     pub fn receive_stdin(&mut self, data: &[u8]) -> Result<(), TabError> {
-        Ok(self.selected_tab_mut().ok_or(TabError::NoSelectedTab)?.receive_stdin(data)?)
+        Ok(self.selected_tab_mut().receive_stdin(data)?)
     }
 }
 
@@ -388,6 +413,7 @@ pub enum TabWriteError {
     UnableToWriteOtherReason,
 }
 
+#[derive(Clone)]
 pub struct Tab {
     pub pty: Arc<FairMutex<ChildPty>>,
     pub terminal: Arc<FairMutex<Term<EventProxy>>>,
@@ -399,7 +425,7 @@ impl Tab {
         size: SizeInfo,
         config: Config,
         event_proxy: crate::event::EventProxy,
-        tab_manager: &mut TabManager,
+        tab_manager: & TabManager,
     ) -> Tab {
         let terminal = Term::new(&config, size, event_proxy.clone());
         let terminal = Arc::new(FairMutex::new(terminal));

@@ -11,7 +11,7 @@ use log::trace;
 use std::borrow::Cow;
 use std::cmp::{max, min, Ordering};
 use std::marker::PhantomData;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use glutin::dpi::PhysicalPosition;
@@ -68,7 +68,7 @@ pub struct Processor<'a, T: EventListener, A: ActionContext<T>> {
 }
 
 pub trait ActionContext<T: EventListener> {
-    fn tab_manager(&self) -> Arc<FairMutex<TabManager>>;
+    fn tab_manager(&self) -> Arc<RwLock<TabManager>>;
     fn write_to_pty<B: Into<Cow<'static, [u8]>>>(&mut self, data: B);
     fn size_info(&self) -> SizeInfo;
     fn copy_selection(&mut self, ty: ClipboardType);
@@ -167,27 +167,27 @@ impl<T: EventListener> Execute<T> for Action {
     fn execute<A: ActionContext<T>>(&self, ctx: &mut A) {
         match *self {
             Action::NewTab => {
-                let mut tbarc = ctx.tab_manager().clone();
-                let mut tbg = tbarc.lock();
-                let mut tab_manager = &mut *tbg;
+                let tbarc = ctx.tab_manager().clone();
+                let tbg = tbarc.read().unwrap();
+                let tab_manager = & *tbg;
                 let idx = tab_manager.new_tab().unwrap();
                 tab_manager.select_tab(idx);
                 // println!("New tab is {}", idx);
                 drop(tbg);
             },
             Action::PreviousTab => {
-                let mut tbarc = ctx.tab_manager().clone();
-                let mut tbg = tbarc.lock();
-                let mut tab_manager = &mut *tbg;
+                let tbarc = ctx.tab_manager().clone();
+                let tbg = tbarc.read().unwrap();
+                let tab_manager = & *tbg;
                 let prev_tab = tab_manager.prev_tab_idx().unwrap();
                 // println!("prev tab is {}", prev_tab);
                 tab_manager.select_tab(prev_tab);
                 drop(tbg);
             },            
             Action::NextTab => {
-                let mut tbarc = ctx.tab_manager().clone();
-                let mut tbg = tbarc.lock();
-                let mut tab_manager = &mut *tbg;
+                let tbarc = ctx.tab_manager().clone();
+                let tbg = tbarc.read().unwrap();
+                let tab_manager = & *tbg;
                 let next_tab = tab_manager.next_tab_idx().unwrap();
                 // println!("next tab is {}", next_tab);
                 tab_manager.select_tab(next_tab);
@@ -976,9 +976,9 @@ impl<'a, T: EventListener, A: ActionContext<T>> Processor<'a, T, A> {
             match self.ctx.find_tab(self.ctx.mouse().column) {
                 Some(tab_idx) => {
                     let tm = self.ctx.tab_manager().clone();
-                    let mut tmguard = tm.lock();
-                    let mut tab_manager = &mut *tmguard;
-                        tab_manager.select_tab(tab_idx);
+                    let tmguard = tm.read().unwrap();
+                    let tab_manager = & *tmguard;
+                    tab_manager.select_tab(tab_idx);
                     drop(tmguard);
                 },
                 None => {
@@ -1332,7 +1332,7 @@ mod tests {
     }
 
     struct ActionContext<'a, T> {
-        pub tab_mananger: Arc<FairMutex<TabManager>>,
+        pub tab_mananger: Arc<RwLock<TabManager>>,
         // pub terminal: &'a mut Term<T>,
         pub selection: &'a mut Option<Selection>,
         pub size_info: &'a SizeInfo,
@@ -1422,7 +1422,7 @@ mod tests {
         fn launch_url_wt(&self, url: Url, terminal: &mut Term<EventProxy>) {
 
         }
-        fn tab_manager(&self) -> Arc<FairMutex<TabManager>> {
+        fn tab_manager(&self) -> Arc<RwLock<TabManager>> {
             return self.tab_manager.clone();
         }
 

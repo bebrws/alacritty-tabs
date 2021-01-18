@@ -2,7 +2,7 @@ use crate::tty::EventedPty;
 use crate::term::Term;
 use crate::sync::FairMutex;
 use crate::event::OnResize;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use crate::event::EventListener;
 

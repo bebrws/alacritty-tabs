@@ -4,9 +4,9 @@
 macro_rules! tm_cl {
     ($tm:expr, $terminal:ident,  { $($b:tt)* } ) => {
         let tm = $tm.clone();
-        let mut tab_manager_guard = tm.lock();
-        let tab_manager: &mut TabManager = &mut *tab_manager_guard;
-        let tab = tab_manager.selected_tab().unwrap();
+        let mut tab_manager_guard = tm.read().unwrap();
+        let tab_manager: & TabManager = & *tab_manager_guard;
+        let tab = &*tab_manager.selected_tab_arc();
         let terminal_mutex = tab.terminal.clone();
         let mut terminal_guard = terminal_mutex.lock();
         let mut $terminal = &mut *terminal_guard;

@@ -5,7 +5,7 @@ use std::collections::VecDeque;
 use std::fs::File;
 use std::io::{self, ErrorKind, Read, Write};
 use std::marker::Send;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::thread::JoinHandle;
 
 use log::error;

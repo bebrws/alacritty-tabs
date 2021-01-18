@@ -11,7 +11,7 @@ use std::os::unix::io::AsRawFd;
 
 use alacritty_terminal::tty::ToWinsize;
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use mio::event::{Iter};
 use mio::{self, Token, Poll, Events, PollOpt, Ready};
 use mio::unix::UnixReady;
