@@ -575,7 +575,7 @@ impl Display {
         
         let tab_buttons = (tab_min..=tab_max).map(|i| if i==sel_tab { format!("[*{:0>3}]", i) } else { format!("[{:0>3}]", i) }).collect::<Vec<String>>().join(" ");
 
-        let tabs_string = format!("{} Tab: {} of {} - {}", tab_buttons, sel_tab, tab_min, tab_max);
+        let tabs_string = format!("{} Tab: {} of {}", tab_buttons, sel_tab, tab_max + 1);
         let tab_string_len = tabs_string.len() + 5;
         
         let columns = (size_info.width() / size_info.cell_width()) as usize;
