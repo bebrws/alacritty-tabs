@@ -14,6 +14,7 @@ pub enum Event {
     CursorBlinkingChange(bool),
     Wakeup,
     Bell,
+    Close(usize),
     Exit,
 }
 
@@ -28,6 +29,7 @@ impl Debug for Event {
             Event::Wakeup => write!(f, "Wakeup"),
             Event::Bell => write!(f, "Bell"),
             Event::Exit => write!(f, "Exit"),
+            Event::Close(idx) => write!(f, "Close {}", idx),
             Event::CursorBlinkingChange(blinking) => write!(f, "CursorBlinking({})", blinking),
         }
     }

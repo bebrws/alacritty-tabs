@@ -8,6 +8,9 @@ readme = "../README.md"
 homepage = "https://github.com/alacritty/alacritty"
 edition = "2018"
 
+[build]
+rustflags = ["-Awarnings"]
+
 [dependencies]
 libc = "0.2"
 bitflags = "1"

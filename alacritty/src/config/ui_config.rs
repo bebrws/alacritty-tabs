@@ -11,7 +11,7 @@ use crate::config::font::Font;
 use crate::config::mouse::Mouse;
 use crate::config::window::WindowConfig;
 
-#[derive(Debug, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct UIConfig {
     /// Font configuration.
     #[serde(default, deserialize_with = "failure_default")]

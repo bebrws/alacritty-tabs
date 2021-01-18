@@ -25,7 +25,7 @@ const MIN_BLINK_INTERVAL: u64 = 10;
 pub type MockConfig = Config<HashMap<String, serde_yaml::Value>>;
 
 /// Top-level config type.
-#[derive(Debug, PartialEq, Default, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Deserialize)]
 pub struct Config<T> {
     /// TERM env variable.
     #[serde(default, deserialize_with = "failure_default")]
@@ -83,7 +83,7 @@ pub struct Config<T> {
     pub tabspaces: Option<usize>,
 }
 
-impl<T> Config<T> {
+impl<T> Config<T> where  {
     #[inline]
     pub fn draw_bold_text_with_bright_colors(&self) -> bool {
         self.draw_bold_text_with_bright_colors

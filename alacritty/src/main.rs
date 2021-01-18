@@ -13,12 +13,20 @@
 #[cfg(not(any(feature = "x11", feature = "wayland", target_os = "macos", windows)))]
 compile_error!(r#"at least one of the "x11"/"wayland" features must be enabled"#);
 
+use mio::event::Iter;
 #[cfg(target_os = "macos")]
 use std::env;
 use std::error::Error;
 use std::fs;
 use std::io::{self, Write};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use mio::unix::EventedFd;
+use mio::unix::UnixReady;
+use mio::{self, Events, Poll, PollOpt, Ready, Token};
+use mio_extras::channel::{channel, Receiver, Sender};
+use std::os::unix::io::AsRawFd;
 
 use glutin::event_loop::EventLoop as GlutinEventLoop;
 use log::{error, info};
@@ -30,6 +38,12 @@ use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::Term;
 use alacritty_terminal::tty;
 
+use crate::tab_manager::TabManager;
+
+#[macro_use]
+mod macros;
+
+mod child_pty;
 mod cli;
 mod clipboard;
 mod config;
@@ -45,8 +59,11 @@ mod message_bar;
 mod meter;
 #[cfg(windows)]
 mod panic;
+mod passwd;
 mod renderer;
 mod scheduler;
+mod tab_manager;
+mod tty_spawn;
 mod url;
 mod window;
 
@@ -68,6 +85,8 @@ use crate::macos::locale;
 use crate::message_bar::MessageBuffer;
 
 fn main() {
+    color_backtrace::install();
+
     #[cfg(windows)]
     panic::attach_handler();
 
@@ -140,49 +159,42 @@ fn run(
 
     let event_proxy = EventProxy::new(window_event_loop.create_proxy());
 
+    let tab_manager = TabManager::new(event_proxy.clone(), config.clone());
+
+    let tab_manager_mutex = Arc::new(FairMutex::new(tab_manager));
+
     // Create a display.
     //
-    // The display manages a window and can draw the terminal.
-    let display = Display::new(&config, &window_event_loop)?;
-
+    let tab_manager_mutex_display_clone = tab_manager_mutex.clone();
+    let display = Display::new(&config, &window_event_loop, tab_manager_mutex_display_clone)?;
     info!(
         "PTY dimensions: {:?} x {:?}",
         display.size_info.screen_lines(),
         display.size_info.cols()
     );
 
-    // Create the terminal.
-    //
-    // This object contains all of the state about what's being displayed. It's
-    // wrapped in a clonable mutex since both the I/O loop and display need to
-    // access it.
-    let terminal = Term::new(&config, display.size_info, event_proxy.clone());
-    let terminal = Arc::new(FairMutex::new(terminal));
+    let tab_manager_mutex_main_clone = tab_manager_mutex.clone();
+    let mut tab_manager_main_guard = tab_manager_mutex_main_clone.lock();
+    let tab_manager = &mut *tab_manager_main_guard;
+    tab_manager.set_size(display.size_info.clone());
 
-    // Create the PTY.
-    //
-    // The PTY forks a process to run the shell on the slave side of the
-    // pseudoterminal. A file descriptor for the master side is retained for
-    // reading/writing to the shell.
-    let pty = tty::new(&config, &display.size_info, display.window.x11_window_id());
+    
+    let idx = tab_manager.new_tab().unwrap();
+    tab_manager.select_tab(idx);
+    
+    drop(tab_manager_main_guard);
 
-    // Create the pseudoterminal I/O loop.
-    //
-    // PTY I/O is ran on another thread as to not occupy cycles used by the
-    // renderer and input processing. Note that access to the terminal state is
-    // synchronized since the I/O loop updates the state, and the display
-    // consumes it periodically.
-    let event_loop = EventLoop::new(
-        Arc::clone(&terminal),
-        event_proxy.clone(),
-        pty,
-        config.hold,
-        config.ui_config.debug.ref_test,
-    );
-
-    // The event loop channel allows write requests from the event processor
-    // to be sent to the pty loop and ultimately written to the pty.
-    let loop_tx = event_loop.channel();
+    let event_proxy_clone  = event_proxy.clone();
+    std::thread::spawn(move || {
+        loop {
+            std::thread::sleep(Duration::from_millis(100));
+                            
+            event_proxy_clone.send_event(crate::event::Event::TerminalEvent(
+                alacritty_terminal::event::Event::Wakeup,
+            ));
+        }
+    });
+    
 
     // Create a config monitor when config was loaded from path.
     //
@@ -196,21 +208,16 @@ fn run(
     let message_buffer = MessageBuffer::new();
 
     // Event processor.
-    let mut processor = Processor::new(
-        event_loop::Notifier(loop_tx.clone()),
-        message_buffer,
-        config,
-        display,
-        options,
-    );
-
-    // Kick off the I/O thread.
-    let io_thread = event_loop.spawn();
+    let tab_manager_processor_mutex_clone = tab_manager_mutex.clone();
+    let mut processor =
+        Processor::new(tab_manager_processor_mutex_clone, message_buffer, config, display, options);
 
     info!("Initialisation complete");
 
+    println!("Starting input processor");
+
     // Start event loop and block until shutdown.
-    processor.run(terminal, window_event_loop);
+    processor.run(window_event_loop);
 
     // This explicit drop is needed for Windows, ConPTY backend. Otherwise a deadlock can occur.
     // The cause:
@@ -226,8 +233,8 @@ fn run(
     drop(processor);
 
     // Shutdown PTY parser event loop.
-    loop_tx.send(Msg::Shutdown).expect("Error sending shutdown to PTY event loop");
-    io_thread.join().expect("join io thread");
+    // loop_tx.send(Msg::Shutdown).expect("Error sending shutdown to PTY event loop");
+    // io_thread.join().expect("join io thread");
 
     // FIXME patch notify library to have a shutdown method.
     // config_reloader.join().ok();

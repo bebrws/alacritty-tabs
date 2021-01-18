@@ -8,6 +8,8 @@ use std::fmt::{self, Formatter};
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 
+use std::sync::Arc;
+
 use glutin::dpi::{PhysicalPosition, PhysicalSize};
 use glutin::event::ModifiersState;
 use glutin::event_loop::EventLoop;
@@ -24,12 +26,14 @@ use wayland_client::{Display as WaylandDisplay, EventQueue};
 use crossfont::set_font_smoothing;
 use crossfont::{self, Rasterize, Rasterizer};
 
+use alacritty_terminal::sync::FairMutex;
+
 use alacritty_terminal::event::{EventListener, OnResize};
 use alacritty_terminal::index::{Column, Direction, Point};
 use alacritty_terminal::selection::Selection;
 use alacritty_terminal::term::{SizeInfo, Term, TermMode};
 use alacritty_terminal::term::{MIN_COLS, MIN_SCREEN_LINES};
-
+use alacritty_terminal::index::Line;
 use crate::config::font::Font;
 use crate::config::window::Dimensions;
 #[cfg(not(windows))]
@@ -42,6 +46,8 @@ use crate::renderer::rects::{RenderLines, RenderRect};
 use crate::renderer::{self, GlyphCache, QuadRenderer};
 use crate::url::{Url, Urls};
 use crate::window::{self, Window};
+
+use crate::tab_manager::TabManager;
 
 const FORWARD_SEARCH_LABEL: &str = "Search: ";
 const BACKWARD_SEARCH_LABEL: &str = "Backward Search: ";
@@ -166,10 +172,11 @@ pub struct Display {
     renderer: QuadRenderer,
     glyph_cache: GlyphCache,
     meter: Meter,
+    tab_manager: Arc<FairMutex<TabManager>>
 }
 
 impl Display {
-    pub fn new<E>(config: &Config, event_loop: &EventLoop<E>) -> Result<Display, Error> {
+    pub fn new<E>(config: &Config, event_loop: &EventLoop<E>, tab_manager: Arc<FairMutex<TabManager>>) -> Result<Display, Error> {
         // Guess DPR based on first monitor.
         let estimated_dpr =
             event_loop.available_monitors().next().map(|m| m.scale_factor()).unwrap_or(1.);
@@ -304,6 +311,7 @@ impl Display {
             #[cfg(all(feature = "wayland", not(any(target_os = "macos", windows))))]
             wayland_event_queue,
             cursor_hidden: false,
+            tab_manager
         })
     }
 
@@ -362,16 +370,13 @@ impl Display {
     }
 
     /// Process update events.
-    pub fn handle_update<T>(
+    pub fn handle_update(
         &mut self,
-        terminal: &mut Term<T>,
-        pty_resize_handle: &mut dyn OnResize,
         message_buffer: &MessageBuffer,
         search_active: bool,
         config: &Config,
         update_pending: DisplayUpdate,
-    ) where
-        T: EventListener,
+    )
     {
         let (mut cell_width, mut cell_height) =
             (self.size_info.cell_width(), self.size_info.cell_height());
@@ -411,12 +416,13 @@ impl Display {
         let search_lines = if search_active { 1 } else { 0 };
         self.size_info.reserve_lines(message_bar_lines + search_lines);
 
-        // Resize PTY.
-        pty_resize_handle.on_resize(&self.size_info);
+        let tm = self.tab_manager.clone();
+        let mut tab_manager_guard = tm.lock();
+        let tab_manager: &mut TabManager = &mut *tab_manager_guard;
+        tab_manager.resize(self.size_info);
+        drop(tab_manager_guard);
 
-        // Resize terminal.
-        terminal.resize(self.size_info);
-
+    
         // Resize renderer.
         let physical =
             PhysicalSize::new(self.size_info.width() as u32, self.size_info.height() as u32);
@@ -434,7 +440,8 @@ impl Display {
     /// This call may block if vsync is enabled.
     pub fn draw<T>(
         &mut self,
-        terminal: MutexGuard<'_, Term<T>>,
+        tab_manager: &mut TabManager,
+        terminal: &mut Term<T>,
         message_buffer: &MessageBuffer,
         config: &Config,
         mouse: &Mouse,
@@ -483,6 +490,7 @@ impl Display {
             self.renderer.with_api(&config.ui_config, config.cursor, &size_info, |mut api| {
                 // Iterate over all non-empty cells in the grid.
                 for mut cell in grid_cells {
+                    cell.line += 1; // Leave the first line open for the tab list
                     // Invert the active match in vi-less search.
                     let cell_point = Point::new(cell.line, cell.column);
                     if cell.is_match
@@ -548,6 +556,40 @@ impl Display {
             );
             rects.push(visual_bell_rect);
         }
+
+        let fg = config.colors.primary.foreground;
+
+        // let mut tm = self.tab_manager.clone();
+        // let mut tab_manager_guard = tm.lock();
+        // let tab_manager = &mut *tab_manager_guard;
+        let sel_tab = match tab_manager.selected_tab_idx() {
+            Some(idx) => {
+                idx
+            },
+            None => {
+                0
+            }
+        };
+        let tab_min = 0;
+        let mut tab_max = tab_manager.tabs.len() - 1;
+        
+        let tab_buttons = (tab_min..=tab_max).map(|i| if i==sel_tab { format!("[*{:0>3}]", i) } else { format!("[{:0>3}]", i) }).collect::<Vec<String>>().join(" ");
+
+        let tabs_string = format!("{} Tab: {} of {} - {}", tab_buttons, sel_tab, tab_min, tab_max);
+        let tab_string_len = tabs_string.len() + 5;
+        
+        let columns = (size_info.width() / size_info.cell_width()) as usize;
+        
+        let mut tab_string_location = 0;
+        if columns > tab_string_len {
+            tab_string_location = columns - tab_string_len;
+        }
+
+        tab_string_location = 0;
+        
+        self.renderer.with_api(&config.ui_config, config.cursor, &size_info, |mut api| {
+            api.render_string_column_offset(glyph_cache,  Line(0),tab_string_location, &tabs_string, fg, None);
+        });
 
         if let Some(message) = message_buffer.message() {
             let search_offset = if search_active { 1 } else { 0 };

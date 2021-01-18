@@ -19,6 +19,9 @@ use crate::cli::Options;
 use crate::event::Event;
 use crate::message_bar::{Message, MessageType};
 
+use chrono::prelude::*;
+use time::Duration;
+
 /// Name for the environment variable containing the log file's path.
 const ALACRITTY_LOG_ENV: &str = "ALACRITTY_LOG";
 /// List of targets which will be logged by Alacritty.
@@ -107,7 +110,8 @@ impl log::Log for Logger {
             return;
         }
 
-        let now = time::strftime("%F %T.%f", &time::now()).unwrap();
+        let dt = Local::now();
+        let now = dt.format("%F %T.%f").to_string();
         let msg = format!("[{}] [{:<5}] [{}] {}\n", now, record.level(), target, record.args());
 
         if let Ok(mut logfile) = self.logfile.lock() {

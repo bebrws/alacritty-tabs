@@ -988,6 +988,37 @@ impl<'a> RenderApi<'a> {
         }
     }
 
+    pub fn render_string_column_offset(
+        &mut self,
+        glyph_cache: &mut GlyphCache,
+        line: Line,
+        column_offset: usize,
+        string: &str,
+        fg: Rgb,
+        bg: Option<Rgb>,
+    ) {
+        let bg_alpha = bg.map(|_| 1.0).unwrap_or(0.0);
+
+        let cells = string
+            .chars()
+            .enumerate()
+            .map(|(i, c)| RenderableCell {
+                line,
+                column: Column(i+column_offset),
+                inner: RenderableCellContent::Chars((c, None)),
+                flags: Flags::empty(),
+                bg_alpha,
+                fg,
+                bg: bg.unwrap_or(Rgb { r: 0, g: 0, b: 0 }),
+                is_match: false,
+            })
+            .collect::<Vec<_>>();
+
+        for cell in cells {
+            self.render_cell(cell, glyph_cache);
+        }
+    }
+
     #[inline]
     fn add_render_item(&mut self, cell: &RenderableCell, glyph: &Glyph) {
         // Flush batch if tex changing.

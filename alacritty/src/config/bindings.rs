@@ -96,6 +96,10 @@ pub enum Action {
     #[serde(skip)]
     ViAction(ViAction),
 
+    NewTab,
+    PreviousTab,
+    NextTab,
+
     /// Paste contents of system clipboard.
     Paste,
 
@@ -309,6 +313,9 @@ pub fn default_key_bindings() -> Vec<KeyBinding> {
         Copy,  +TermMode::VI; Action::ClearSelection;
         Paste, ~TermMode::VI; Action::Paste;
         L, ModifiersState::CTRL; Action::ClearLogNotice;
+        T, ModifiersState::LOGO; Action::NewTab;
+        LBracket, ModifiersState::LOGO | ModifiersState::SHIFT; Action::PreviousTab;
+        RBracket, ModifiersState::LOGO | ModifiersState::SHIFT; Action::NextTab;
         L,    ModifiersState::CTRL,  ~TermMode::VI; Action::Esc("\x0c".into());
         Tab,  ModifiersState::SHIFT, ~TermMode::VI; Action::Esc("\x1b[Z".into());
         Back, ModifiersState::ALT,   ~TermMode::VI; Action::Esc("\x1b\x7f".into());

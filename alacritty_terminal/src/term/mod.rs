@@ -142,7 +142,7 @@ pub struct RenderableCellsIter<'a, C> {
     search: RenderableSearch<'a>,
 }
 
-impl<'a, C> Iterator for RenderableCellsIter<'a, C> {
+impl<'a, C> Iterator for RenderableCellsIter<'a, C> where C: Clone {
     type Item = RenderableCell;
 
     /// Gets the next renderable cell.
@@ -173,7 +173,7 @@ impl<'a, C> Iterator for RenderableCellsIter<'a, C> {
     }
 }
 
-impl<'a, C> RenderableCellsIter<'a, C> {
+impl<'a, C> RenderableCellsIter<'a, C>  where C: Clone {
     /// Create the renderable cells iterator.
     ///
     /// The cursor and terminal mode are required for properly displaying the
@@ -322,7 +322,7 @@ pub struct RenderableCell {
 }
 
 impl RenderableCell {
-    fn new<'a, C>(iter: &mut RenderableCellsIter<'a, C>, cell: Indexed<&Cell>) -> Self {
+    fn new<'a, C>(iter: &mut RenderableCellsIter<'a, C>, cell: Indexed<&Cell>) -> Self where C: Clone, {
         let point = Point::new(cell.line, cell.column);
 
         // Lookup RGB values.
@@ -386,7 +386,7 @@ impl RenderableCell {
             && self.inner == RenderableCellContent::Chars((' ', None))
     }
 
-    fn compute_fg_rgb<C>(config: &Config<C>, colors: &color::List, fg: Color, flags: Flags) -> Rgb {
+    fn compute_fg_rgb<C>(config: &Config<C>, colors: &color::List, fg: Color, flags: Flags) -> Rgb where C: Clone {
         match fg {
             Color::Spec(rgb) => match flags & Flags::DIM {
                 Flags::DIM => rgb * DIM_FACTOR,
@@ -842,7 +842,7 @@ impl<T> Term<T> {
 
     pub fn new<C>(config: &Config<C>, size: SizeInfo, event_proxy: T) -> Term<T> {
         let num_cols = size.cols;
-        let num_lines = size.screen_lines;
+        let num_lines = size.screen_lines - 1;
 
         let history_size = config.scrolling.history() as usize;
         let grid = Grid::new(num_lines, num_cols, history_size);
@@ -1045,7 +1045,7 @@ impl<T> Term<T> {
         &'b self,
         config: &'b Config<C>,
         show_cursor: bool,
-    ) -> RenderableCellsIter<'_, C> {
+    ) -> RenderableCellsIter<'_, C> where C: Clone {
         RenderableCellsIter::new(&self, config, show_cursor)
     }
 
@@ -1080,7 +1080,7 @@ impl<T> Term<T> {
         let old_lines = self.screen_lines();
 
         let num_cols = size.cols;
-        let num_lines = size.screen_lines;
+        let num_lines = size.screen_lines - 1;
 
         if old_cols == num_cols && old_lines == num_lines {
             debug!("Term::resize dimensions unchanged");
@@ -2848,65 +2848,5 @@ mod tests {
         assert_eq!(version_number("0.1.2-dev"), 1_02);
         assert_eq!(version_number("1.2.3-dev"), 1_02_03);
         assert_eq!(version_number("999.99.99"), 9_99_99_99);
-    }
-}
-
-#[cfg(all(test, feature = "bench"))]
-mod benches {
-    extern crate serde_json as json;
-    extern crate test;
-
-    use std::fs;
-    use std::mem;
-
-    use crate::config::MockConfig;
-    use crate::event::{Event, EventListener};
-    use crate::grid::Grid;
-
-    use super::cell::Cell;
-    use super::{SizeInfo, Term};
-
-    struct Mock;
-    impl EventListener for Mock {
-        fn send_event(&self, _event: Event) {}
-    }
-
-    /// Benchmark for the renderable cells iterator.
-    ///
-    /// The renderable cells iterator yields cells that require work to be
-    /// displayed (that is, not an empty background cell). This benchmark
-    /// measures how long it takes to process the whole iterator.
-    ///
-    /// When this benchmark was first added, it averaged ~78usec on my macbook
-    /// pro. The total render time for this grid is anywhere between ~1500 and
-    /// ~2000usec (measured imprecisely with the visual meter).
-    #[bench]
-    fn render_iter(b: &mut test::Bencher) {
-        // Need some realistic grid state; using one of the ref files.
-        let serialized_grid = fs::read_to_string(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/ref/vim_large_window_scroll/grid.json"
-        ))
-        .unwrap();
-        let serialized_size = fs::read_to_string(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/ref/vim_large_window_scroll/size.json"
-        ))
-        .unwrap();
-
-        let mut grid: Grid<Cell> = json::from_str(&serialized_grid).unwrap();
-        let size: SizeInfo = json::from_str(&serialized_size).unwrap();
-
-        let config = MockConfig::default();
-
-        let mut terminal = Term::new(&config, size, Mock);
-        mem::swap(&mut terminal.grid, &mut grid);
-
-        b.iter(|| {
-            let iter = terminal.renderable_cells(&config, true);
-            for cell in iter {
-                test::black_box(cell);
-            }
-        })
     }
 }
