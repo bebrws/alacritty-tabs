@@ -695,7 +695,21 @@ impl SizeInfo {
     /// coordinates will be clamped to the closest grid coordinates.
     pub fn pixels_to_coords(&self, x: usize, y: usize) -> Point {
         let col = Column(x.saturating_sub(self.padding_x as usize) / (self.cell_width as usize));
-        let line = Line(y.saturating_sub(self.padding_y as usize) / (self.cell_height as usize)) - 1;
+        let mut innerl = y.saturating_sub(self.padding_y as usize) / (self.cell_height as usize);
+        if innerl >= 1 {
+            innerl -= 1;
+        }
+        let mut line = Line(innerl);
+
+        Point {
+            line: min(line, Line(self.screen_lines.saturating_sub(1))),
+            col: min(col, Column(self.cols.saturating_sub(1))),
+        }
+    }
+
+    pub fn pixels_to_coords_including_tab_bar(&self, x: usize, y: usize) -> Point {
+        let col = Column(x.saturating_sub(self.padding_x as usize) / (self.cell_width as usize));
+        let line = Line(y.saturating_sub(self.padding_y as usize) / (self.cell_height as usize));
 
         Point {
             line: min(line, Line(self.screen_lines.saturating_sub(1))),

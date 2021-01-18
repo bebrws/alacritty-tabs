@@ -557,7 +557,6 @@ impl Display {
             rects.push(visual_bell_rect);
         }
 
-        let fg = config.colors.primary.foreground;
 
         // let mut tm = self.tab_manager.clone();
         // let mut tab_manager_guard = tm.lock();
@@ -588,7 +587,7 @@ impl Display {
         tab_string_location = 0;
         
         self.renderer.with_api(&config.ui_config, config.cursor, &size_info, |mut api| {
-            api.render_string_column_offset(glyph_cache,  Line(0),tab_string_location, &tabs_string, fg, None);
+            api.render_string_column_offset(glyph_cache,  Line(0),tab_string_location, &tabs_string, config.colors.primary.tabs, None);
         });
 
         if let Some(message) = message_buffer.message() {

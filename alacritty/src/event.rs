@@ -994,6 +994,7 @@ pub struct Mouse {
     pub lines_scrolled: f32,
     pub block_url_launcher: bool,
     pub inside_text_area: bool,
+    pub inside_tab_bar: bool,
 }
 
 impl Default for Mouse {
@@ -1014,6 +1015,7 @@ impl Default for Mouse {
             lines_scrolled: 0.,
             block_url_launcher: false,
             inside_text_area: false,
+            inside_tab_bar: false,
         }
     }
 }

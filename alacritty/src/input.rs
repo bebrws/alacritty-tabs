@@ -523,6 +523,13 @@ impl<'a, T: EventListener, A: ActionContext<T>> Processor<'a, T, A> {
             return;
         }
 
+        let point_tab_bar = size_info.pixels_to_coords_including_tab_bar(x, y);
+        if point_tab_bar.line.0 < 1 {
+            self.ctx.mouse_mut().inside_tab_bar = true;    
+        } else {
+            self.ctx.mouse_mut().inside_tab_bar = false;    
+        }
+
         self.ctx.mouse_mut().inside_text_area = inside_text_area;
         self.ctx.mouse_mut().cell_side = cell_side;
         self.ctx.mouse_mut().line = point.line;
@@ -1213,7 +1220,7 @@ impl<'a, T: EventListener, A: ActionContext<T>> Processor<'a, T, A> {
     fn message_or_tab_bar_mouse_state(&self) -> Option<MouseState> {
         let mouse = self.ctx.mouse();
         
-        if mouse.line.0 == 0 {
+        if mouse.inside_tab_bar {
             match self.ctx.find_tab(mouse.column) {
                 Some(tab_idx) => {
                     Some(MouseState::TabBarButton)
