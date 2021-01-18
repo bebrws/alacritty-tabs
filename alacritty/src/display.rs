@@ -171,11 +171,15 @@ pub struct Display {
     renderer: QuadRenderer,
     glyph_cache: GlyphCache,
     meter: Meter,
-    tab_manager: Arc<FairMutex<TabManager>>
+    tab_manager: Arc<FairMutex<TabManager>>,
 }
 
 impl Display {
-    pub fn new<E>(config: &Config, event_loop: &EventLoop<E>, tab_manager: Arc<FairMutex<TabManager>>) -> Result<Display, Error> {
+    pub fn new<E>(
+        config: &Config,
+        event_loop: &EventLoop<E>,
+        tab_manager: Arc<FairMutex<TabManager>>,
+    ) -> Result<Display, Error> {
         // Guess DPR based on first monitor.
         let estimated_dpr =
             event_loop.available_monitors().next().map(|m| m.scale_factor()).unwrap_or(1.);
@@ -314,7 +318,7 @@ impl Display {
             #[cfg(all(feature = "wayland", not(any(target_os = "macos", windows))))]
             wayland_event_queue,
             cursor_hidden: false,
-            tab_manager
+            tab_manager,
         })
     }
 
@@ -379,8 +383,7 @@ impl Display {
         search_active: bool,
         config: &Config,
         update_pending: DisplayUpdate,
-    )
-    {
+    ) {
         let (mut cell_width, mut cell_height) =
             (self.size_info.cell_width(), self.size_info.cell_height());
 
@@ -425,7 +428,6 @@ impl Display {
         tab_manager.resize(self.size_info);
         drop(tab_manager_guard);
 
-    
         // Resize renderer.
         let physical =
             PhysicalSize::new(self.size_info.width() as u32, self.size_info.height() as u32);
@@ -500,7 +502,7 @@ impl Display {
                 // Iterate over all non-empty cells in the grid.
                 for mut cell in grid_cells {
                     cell.line += 1; // Leave the first line open for the tab list
-                    // Invert the active match in vi-less search.
+                                    // Invert the active match in vi-less search.
                     let cell_point = Point::new(cell.line, cell.column);
                     if cell.is_match
                         && viewport_match
@@ -581,32 +583,29 @@ impl Display {
             rects.push(visual_bell_rect);
         }
 
-
         // let mut tm = self.tab_manager.clone();
         // let mut tab_manager_guard = tm.lock();
         // let tab_manager = &mut *tab_manager_guard;
         let sel_tab = match tab_manager.selected_tab_idx() {
-            Some(idx) => {
-                idx
-            },
-            None => {
-                0
-            }
+            Some(idx) => idx,
+            None => 0,
         };
 
         let glyph_cache = &mut self.glyph_cache;
 
-
         let tab_min = 0;
         let mut tab_max = tab_manager.tabs.len() - 1;
-        
-        let tab_buttons = (tab_min..=tab_max).map(|i| if i==sel_tab { format!("[*{:0>3}]", i) } else { format!("[{:0>3}]", i) }).collect::<Vec<String>>().join(" ");
+
+        let tab_buttons = (tab_min..=tab_max)
+            .map(|i| if i == sel_tab { format!("[*{:0>3}]", i) } else { format!("[{:0>3}]", i) })
+            .collect::<Vec<String>>()
+            .join(" ");
 
         let tabs_string = format!("{} Tab: {} of {}", tab_buttons, sel_tab, tab_max + 1);
         let tab_string_len = tabs_string.len() + 5;
-        
+
         let columns = (size_info.width() / size_info.cell_width()) as usize;
-        
+
         let mut tab_string_location = 0;
         if columns > tab_string_len {
             tab_string_location = columns - tab_string_len;
@@ -615,7 +614,13 @@ impl Display {
         tab_string_location = 0;
         let p: Point = Point::new(Line(0), Column(tab_string_location));
         self.renderer.with_api(&config.ui_config, &size_info, |mut api| {
-            api.render_string(glyph_cache, p, config.colors.primary.tabs, config.colors.primary.background, &tabs_string);
+            api.render_string(
+                glyph_cache,
+                p,
+                config.colors.primary.tabs,
+                config.colors.primary.background,
+                &tabs_string,
+            );
         });
 
         if let Some(message) = message_buffer.message() {

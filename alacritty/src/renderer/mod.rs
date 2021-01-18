@@ -845,7 +845,7 @@ impl<'a> RenderApi<'a> {
             self.render_cell(cell, glyph_cache);
         }
     }
-    
+
     #[inline]
     fn add_render_item(&mut self, cell: &RenderableCell, glyph: &Glyph) {
         // Flush batch if tex changing.

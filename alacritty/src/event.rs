@@ -187,7 +187,6 @@ impl<'a> ActionContext<'a> {
 }
 
 impl<'a> input::ActionContext<EventProxy> for ActionContext<'a> {
-
     #[inline]
     fn search_pop_word(&mut self) {
         if let Some(regex) = self.search_state.regex_mut() {
@@ -197,13 +196,11 @@ impl<'a> input::ActionContext<EventProxy> for ActionContext<'a> {
         }
     }
 
-
     fn tab_manager(&self) -> Arc<FairMutex<TabManager>> {
         return self.tab_manager.clone();
     }
 
     fn write_to_pty<B: Into<Cow<'static, [u8]>>>(&mut self, val: B) {
-
         let mut tab_manager_guard = self.tab_manager.lock();
         let mut tab_manager: &mut TabManager = &mut *tab_manager_guard;
         let c: Cow<[u8]> = val.into();
@@ -338,8 +335,8 @@ impl<'a> input::ActionContext<EventProxy> for ActionContext<'a> {
     }
 
     fn find_word(&mut self, point_p: Point, side: Side) -> String {
-        let point:Point = Point::new(point_p.line - 1, point_p.col);
-        
+        let point: Point = Point::new(point_p.line - 1, point_p.col);
+
         let mut ret: String = "".to_string();
         tm_cl!(self.tab_manager, terminal, {
             let grid_cells =
@@ -386,22 +383,21 @@ impl<'a> input::ActionContext<EventProxy> for ActionContext<'a> {
         return ret;
     }
 
-
-    fn find_tab(& self, col: Column) -> Option<usize> {
+    fn find_tab(&self, col: Column) -> Option<usize> {
         //"[000] [000] [000] "
         let mut ret: Option<usize> = None;
 
-        let c = col.0 ;
+        let c = col.0;
 
         let tm = self.tab_manager.clone();
         let mut tmguard = tm.lock();
         let mut tab_manager = &mut *tmguard;
-        
+
         let tab_len = tab_manager.tabs.len();
-        //One tab takes up 6 spaces
+        // One tab takes up 6 spaces
         if c < (tab_len * 6) {
             if c % 6 != 0 {
-                ret = Some(c/6)
+                ret = Some(c / 6)
             }
         }
 
@@ -696,13 +692,10 @@ impl<'a> input::ActionContext<EventProxy> for ActionContext<'a> {
             _ => return,
         }
 
-        
- 
-            if !terminal.mode().contains(TermMode::VI) {
-                // Clear selection so we do not obstruct any matches.
-                terminal.selection = None;
-            }
-        
+        if !terminal.mode().contains(TermMode::VI) {
+            // Clear selection so we do not obstruct any matches.
+            terminal.selection = None;
+        }
 
         self.update_search_wt(terminal);
     }
@@ -746,24 +739,24 @@ impl<'a> input::ActionContext<EventProxy> for ActionContext<'a> {
             let new_origin = match direction {
                 Direction::Right => {
                     tm_cl!(self.tab_manager, terminal, {
-                    let r = focused_match.end().add_absolute(terminal, Boundary::Wrap, 1);
+                        let r = focused_match.end().add_absolute(terminal, Boundary::Wrap, 1);
                     });
                     r
                 },
                 Direction::Left => {
                     tm_cl!(self.tab_manager, terminal, {
-                    let r = focused_match.start().sub_absolute(terminal, Boundary::Wrap, 1);
+                        let r = focused_match.start().sub_absolute(terminal, Boundary::Wrap, 1);
                     });
                     r
                 },
             };
 
             tm_cl!(self.tab_manager, terminal, {
-            terminal.scroll_to_point(new_origin);
+                terminal.scroll_to_point(new_origin);
 
-            let origin_relative = terminal.grid().clamp_buffer_to_visible(new_origin);
-            self.search_state.origin = origin_relative;
-            self.search_state.display_offset_delta = 0;
+                let origin_relative = terminal.grid().clamp_buffer_to_visible(new_origin);
+                self.search_state.origin = origin_relative;
+                self.search_state.display_offset_delta = 0;
             });
         }
 
@@ -789,7 +782,8 @@ impl<'a> input::ActionContext<EventProxy> for ActionContext<'a> {
         };
 
         tm_cl!(self.tab_manager, terminal, {
-            // Store the search origin with display offset by checking how far we need to scroll to it.
+            // Store the search origin with display offset by checking how far we need to scroll to
+            // it.
             let old_display_offset = terminal.grid().display_offset() as isize;
             terminal.scroll_to_point(new_origin);
             let new_display_offset = terminal.grid().display_offset() as isize;
@@ -801,8 +795,6 @@ impl<'a> input::ActionContext<EventProxy> for ActionContext<'a> {
             self.search_state.origin = origin_relative;
         });
     }
-
-        
 
     /// Handle keyboard typing start.
     ///
@@ -904,28 +896,28 @@ impl<'a> ActionContext<'a> {
         // The viewport reset logic is only needed for vi mode, since without it our origin is
         // always at the current display offset instead of at the vi cursor position which we need
         // to recover to.
-        
+
         if !terminal.mode().contains(TermMode::VI) {
             return;
         }
-    
 
         // Reset display offset.
-        
+
         terminal.scroll_display(Scroll::Delta(self.search_state.display_offset_delta));
-        
+
         self.search_state.display_offset_delta = 0;
 
         // Clear focused match.
         self.search_state.focused_match = None;
 
         // Reset vi mode cursor.
-        
+
         let mut origin = self.search_state.origin;
         origin.line = min(origin.line, terminal.screen_lines() - 1);
         origin.col = min(origin.col, terminal.cols() - 1);
         terminal.vi_mode_cursor.point = origin;
     }
+
     /// Reset terminal to the state before search was started.
     fn search_reset_state(&mut self) {
         tm_cl!(self.tab_manager, terminal, {
@@ -1225,9 +1217,7 @@ impl Processor {
                     return;
                 },
 
-                GlutinEvent::UserEvent(Event::TestEvent) => {
-
-                },
+                GlutinEvent::UserEvent(Event::TestEvent) => {},
                 // Process events.
                 GlutinEvent::RedrawEventsCleared => {
                     *control_flow = match scheduler.update(&mut self.event_queue) {
@@ -1257,7 +1247,6 @@ impl Processor {
                     return;
                 },
             }
-
 
             let mut display_update_pending = DisplayUpdate::default();
             let old_is_searching = self.search_state.history_index.is_some();
@@ -1289,7 +1278,6 @@ impl Processor {
                 Processor::handle_event(event, &mut processor, tab_manager_event_processing_clone);
             }
 
-            
             let tm = tab_manager_mutex_clone.clone();
             let mut tab_manager_guard = tm.lock();
             let tab_manager: &mut TabManager = &mut *tab_manager_guard;
@@ -1303,20 +1291,15 @@ impl Processor {
 
             drop(terminal_guard);
             drop(tab_manager_guard);
-            
 
             // Process DisplayUpdate events.
             if display_update_pending.dirty {
-                self.submit_display_update(
-                    old_is_searching,
-                    display_update_pending,
-                );
+                self.submit_display_update(old_is_searching, display_update_pending);
             }
 
             // Skip rendering on Wayland until we get frame event from compositor.
             #[cfg(not(any(target_os = "macos", windows)))]
-            if !self.display.is_x11 && !self.display.window.should_draw.load(Ordering::Relaxed)
-            {
+            if !self.display.is_x11 && !self.display.window.should_draw.load(Ordering::Relaxed) {
                 return;
             }
 
@@ -1440,9 +1423,9 @@ impl Processor {
                         let mut tab_manager_guard = tm.lock();
                         let tab_manager: &mut TabManager = &mut *tab_manager_guard;
 
-                        //Note: no longer attempting to tie the tab_idx to the tab being closed
+                        // Note: no longer attempting to tie the tab_idx to the tab being closed
                         tab_manager.remove_selected_tab();
-                        
+
                         drop(tab_manager_guard);
                     },
                     TerminalEvent::Bell => {

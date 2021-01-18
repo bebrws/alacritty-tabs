@@ -176,23 +176,19 @@ fn run(
     let tab_manager = &mut *tab_manager_main_guard;
     tab_manager.set_size(display.size_info.clone());
 
-    
     let idx = tab_manager.new_tab().unwrap();
     tab_manager.select_tab(idx);
-    
+
     drop(tab_manager_main_guard);
 
-    let event_proxy_clone  = event_proxy.clone();
-    std::thread::spawn(move || {
-        loop {
-            std::thread::sleep(Duration::from_millis(100));
-                            
-            event_proxy_clone.send_event(crate::event::Event::TerminalEvent(
-                alacritty_terminal::event::Event::Wakeup,
-            ));
-        }
+    let event_proxy_clone = event_proxy.clone();
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_millis(100));
+
+        event_proxy_clone.send_event(crate::event::Event::TerminalEvent(
+            alacritty_terminal::event::Event::Wakeup,
+        ));
     });
-    
 
     // Create a config monitor when config was loaded from path.
     //

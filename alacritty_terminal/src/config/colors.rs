@@ -115,7 +115,7 @@ pub struct BarColors {
 #[derive(ConfigDeserialize, Clone, Debug, PartialEq, Eq)]
 pub struct PrimaryColors {
     pub foreground: Rgb,
-    pub tabs: Rgb,        
+    pub tabs: Rgb,
     pub background: Rgb,
     pub bright_foreground: Option<Rgb>,
     pub dim_foreground: Option<Rgb>,
