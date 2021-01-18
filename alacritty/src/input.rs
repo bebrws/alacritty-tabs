@@ -697,9 +697,8 @@ impl<'a, T: EventListener, A: ActionContext<T>> Processor<'a, T, A> {
             let mouse = self.ctx.mouse();
 
             tm_cl!(self.ctx.tab_manager(), terminal, {
-            let mut point = self.ctx.size_info().pixels_to_coords(mouse.x, mouse.y);
-            point.line = min(point.line, terminal.screen_lines() - 1);
-
+                let mut point = self.ctx.size_info().pixels_to_coords(mouse.x, mouse.y);
+                point.line = min(point.line, terminal.screen_lines() - 1);
             });
 
             match button {
@@ -1215,8 +1214,6 @@ impl<'a, T: EventListener, A: ActionContext<T>> Processor<'a, T, A> {
         let mouse = self.ctx.mouse();
         
         if mouse.line.0 == 0 {
-            return Some(MouseState::TabBarButton);
-
             match self.ctx.find_tab(mouse.column) {
                 Some(tab_idx) => {
                     Some(MouseState::TabBarButton)

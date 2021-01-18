@@ -695,7 +695,7 @@ impl SizeInfo {
     /// coordinates will be clamped to the closest grid coordinates.
     pub fn pixels_to_coords(&self, x: usize, y: usize) -> Point {
         let col = Column(x.saturating_sub(self.padding_x as usize) / (self.cell_width as usize));
-        let line = Line(y.saturating_sub(self.padding_y as usize) / (self.cell_height as usize));
+        let line = Line(y.saturating_sub(self.padding_y as usize) / (self.cell_height as usize)) - 1;
 
         Point {
             line: min(line, Line(self.screen_lines.saturating_sub(1))),

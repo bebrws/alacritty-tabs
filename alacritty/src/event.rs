@@ -300,6 +300,7 @@ impl<'a> input::ActionContext<EventProxy> for ActionContext<'a> {
         side: Side,
         terminal: &mut Term<EventProxy>,
     ) {
+        // let point_p: Point<Line> = Point::new(point.line - 1, point.col);
         terminal.selection = Some(Selection::new(ty, terminal.visible_to_buffer(point), side));
         terminal.dirty = true;
     }
