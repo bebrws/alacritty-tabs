@@ -182,12 +182,28 @@ fn run(
     drop(tab_manager_main_guard);
 
     let event_proxy_clone = event_proxy.clone();
+    let tab_manager_draw_mutex = tab_manager_mutex.clone();
     std::thread::spawn(move || loop {
         std::thread::sleep(Duration::from_millis(100));
 
-        event_proxy_clone.send_event(crate::event::Event::TerminalEvent(
-            alacritty_terminal::event::Event::Wakeup,
-        ));
+        // let mut tab_manager_main_guard = tab_manager_draw_mutex.lock();
+        // let tab_manager = &mut *tab_manager_main_guard;
+       
+        // let tab = tab_manager.selected_tab().unwrap();
+
+        // let terminal_arc = tab.terminal.clone();
+        // let mut terminal_guard = terminal_arc.lock();
+        // let mut terminal = &mut *terminal_guard;
+
+        // if terminal.dirty {
+            event_proxy_clone.send_event(crate::event::Event::TerminalEvent(
+                alacritty_terminal::event::Event::Wakeup,
+            ));
+        // }
+    
+        // drop(terminal_guard);
+        // drop(tab_manager_main_guard);
+
     });
 
     // Create a config monitor when config was loaded from path.
