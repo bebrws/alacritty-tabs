@@ -5,7 +5,27 @@ The sections should follow the order `Packaging`, `Added`, `Changed`, `Fixed` an
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## 0.7.0-dev
+## 0.8.0-dev
+
+### Added
+
+- IME composition preview not appearing on Windows
+
+### Fixed
+
+- Crash due to assertion failure on 32-bit architectures
+
+### Packaging
+
+- Updated shell completions
+
+## 0.7.1
+
+### Fixed
+
+- Jumping between matches in backward vi search
+
+## 0.7.0
 
 ### Added
 
@@ -13,16 +33,45 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - New `cursor.style.blinking` option to set the default blinking state
 - New `cursor.blink_interval` option to configure the blinking frequency
 - Support for cursor blinking escapes (`CSI ? 12 h`, `CSI ? 12 l` and `CSI Ps SP q`)
+- IME support on Windows
+- Urgency support on Windows
+- Customizable keybindings for search
+- History for search mode, bound to ^P/^N/Up/Down by default
+- Default binding to cancel search on Ctrl+C
+- History position indicator for search and vi mode
 
 ### Changed
 
 - Nonexistent config imports are ignored instead of raising an error
+- Value for disabling logging with `config.log_level` is `Off` instead of `None`
+- Missing glyph symbols are no longer drawn for zerowidth characters
 
 ### Fixed
 
 - Wide characters sometimes being cut off
 - Preserve vi mode across terminal `reset`
 - Escapes `CSI Ps b` and `CSI Ps Z` with large parameters locking up Alacritty
+- Dimming colors which use the indexed `CSI 38 : 5 : Ps m` notation
+- Slow rendering performance with a lot of cells with underline/strikeout attributes
+- Performance of scrolling regions with offset from the bottom
+- Extra mouse buttons are no longer ignored on Wayland
+- Numpad arrow keys are now properly recognized on Wayland
+- Compilation when targetting aarch64-apple-darwin
+- Window not being completely opaque on Windows
+- Window being always on top during alt-tab on Windows
+- Cursor position not reported to apps when mouse is moved with button held outside of window
+- No live config update when starting Alacritty with a broken configuration file
+- PTY not drained to the end with the `--hold` flag enabled
+- High CPU usage on BSD with live config reload enabled
+- Alacritty not discarding invalid escape sequences starting with ESC
+- Crash due to clipboard not being properly released on Wayland
+- Shadow artifacts when resizing transparent windows on macOS
+- Missing glyph symbols not being rendered for missing glyphs on macOS and Windows
+- Underline cursor being obscured by underline
+- Cursor not being rendered with a lot of unicode glyphs visible
+- IME input swallowed after triggering a key binding
+- Crash on Wayland due to non-standard fontconfig configuration
+- Search without vi mode not jumping properly between all matches
 
 ### Removed
 
@@ -32,6 +81,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
     * `--no-live-config-reload`
     * `--dimensions`
     * `--position`
+- `live-shader-reload` feature
+- Config option `dynamic_title`, you should use `window.dynamic_title` instead
+- Config option `scrolling.faux_multiplier`, which was replaced by escape `CSI ? 1007 h/l`
+- WinPTY support on Windows
 
 ## 0.6.0
 

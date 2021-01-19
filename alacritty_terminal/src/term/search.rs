@@ -70,7 +70,8 @@ impl<T> Term<T> {
         side: Side,
         mut max_lines: Option<usize>,
     ) -> Option<Match> {
-        origin = self.expand_wide(origin, direction);
+        // origin = self.expand_wide(origin, direction);
+        origin = Point::new(0, Column(0));
 
         max_lines = max_lines.filter(|max_lines| max_lines + 1 < self.total_lines());
 
@@ -87,8 +88,6 @@ impl<T> Term<T> {
         side: Side,
         max_lines: Option<usize>,
     ) -> Option<Match> {
-        // Skip origin itself to exclude it from the search results.
-        let origin = origin.add_absolute(self, Boundary::Wrap, 1);
         let start = self.line_search_left(origin);
         let mut end = start;
 
@@ -128,8 +127,6 @@ impl<T> Term<T> {
         side: Side,
         max_lines: Option<usize>,
     ) -> Option<Match> {
-        // Skip origin itself to exclude it from the search results.
-        let origin = origin.sub_absolute(self, Boundary::Wrap, 1);
         let start = self.line_search_right(origin);
         let mut end = start;
 

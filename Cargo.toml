@@ -2,7 +2,10 @@
 members = [
     "alacritty",
     "alacritty_terminal",
+    "alacritty_config_derive",
 ]
+
+
 
 [profile.release]
 lto = true

@@ -7,6 +7,8 @@ use log::{debug, trace};
 use serde::{Deserialize, Serialize};
 use vte::{Params, ParamsIter};
 
+use alacritty_config_derive::ConfigDeserialize;
+
 use crate::index::{Column, Line};
 use crate::term::color::Rgb;
 
@@ -332,14 +334,14 @@ pub trait Handler {
 }
 
 /// Terminal cursor configuration.
-#[derive(Deserialize, Default, Debug, Eq, PartialEq, Copy, Clone, Hash)]
+#[derive(ConfigDeserialize, Default, Debug, Eq, PartialEq, Copy, Clone, Hash)]
 pub struct CursorStyle {
     pub shape: CursorShape,
     pub blinking: bool,
 }
 
 /// Terminal cursor shape.
-#[derive(Deserialize, Debug, Eq, PartialEq, Copy, Clone, Hash)]
+#[derive(ConfigDeserialize, Debug, Eq, PartialEq, Copy, Clone, Hash)]
 pub enum CursorShape {
     /// Cursor is a block like `▒`.
     Block,
@@ -351,11 +353,11 @@ pub enum CursorShape {
     Beam,
 
     /// Cursor is a box like `☐`.
-    #[serde(skip)]
+    #[config(skip)]
     HollowBlock,
 
     /// Invisible cursor.
-    #[serde(skip)]
+    #[config(skip)]
     Hidden,
 }
 
@@ -509,7 +511,7 @@ pub enum TabulationClearMode {
 ///
 /// The order here matters since the enum should be castable to a `usize` for
 /// indexing a color list.
-#[derive(Debug, Copy, Clone, Eq, PartialEq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug, Copy, Clone, Eq, PartialEq, PartialOrd, Ord)]
 pub enum NamedColor {
     /// Black.
     Black = 0,
@@ -621,7 +623,7 @@ impl NamedColor {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Color {
     Named(NamedColor),
     Spec(Rgb),
@@ -1131,12 +1133,12 @@ where
         }
 
         macro_rules! configure_charset {
-            ($charset:path, $intermediate:expr) => {{
-                let index: CharsetIndex = match $intermediate {
-                    Some(b'(') => CharsetIndex::G0,
-                    Some(b')') => CharsetIndex::G1,
-                    Some(b'*') => CharsetIndex::G2,
-                    Some(b'+') => CharsetIndex::G3,
+            ($charset:path, $intermediates:expr) => {{
+                let index: CharsetIndex = match $intermediates {
+                    [b'('] => CharsetIndex::G0,
+                    [b')'] => CharsetIndex::G1,
+                    [b'*'] => CharsetIndex::G2,
+                    [b'+'] => CharsetIndex::G3,
                     _ => {
                         unhandled!();
                         return;
@@ -1146,27 +1148,27 @@ where
             }};
         }
 
-        match (byte, intermediates.get(0)) {
-            (b'B', intermediate) => configure_charset!(StandardCharset::Ascii, intermediate),
-            (b'D', None) => self.handler.linefeed(),
-            (b'E', None) => {
+        match (byte, intermediates) {
+            (b'B', intermediates) => configure_charset!(StandardCharset::Ascii, intermediates),
+            (b'D', []) => self.handler.linefeed(),
+            (b'E', []) => {
                 self.handler.linefeed();
                 self.handler.carriage_return();
             },
-            (b'H', None) => self.handler.set_horizontal_tabstop(),
-            (b'M', None) => self.handler.reverse_index(),
-            (b'Z', None) => self.handler.identify_terminal(self.writer, None),
-            (b'c', None) => self.handler.reset_state(),
-            (b'0', intermediate) => {
-                configure_charset!(StandardCharset::SpecialCharacterAndLineDrawing, intermediate)
+            (b'H', []) => self.handler.set_horizontal_tabstop(),
+            (b'M', []) => self.handler.reverse_index(),
+            (b'Z', []) => self.handler.identify_terminal(self.writer, None),
+            (b'c', []) => self.handler.reset_state(),
+            (b'0', intermediates) => {
+                configure_charset!(StandardCharset::SpecialCharacterAndLineDrawing, intermediates)
             },
-            (b'7', None) => self.handler.save_cursor_position(),
-            (b'8', Some(b'#')) => self.handler.decaln(),
-            (b'8', None) => self.handler.restore_cursor_position(),
-            (b'=', None) => self.handler.set_keypad_application_mode(),
-            (b'>', None) => self.handler.unset_keypad_application_mode(),
+            (b'7', []) => self.handler.save_cursor_position(),
+            (b'8', [b'#']) => self.handler.decaln(),
+            (b'8', []) => self.handler.restore_cursor_position(),
+            (b'=', []) => self.handler.set_keypad_application_mode(),
+            (b'>', []) => self.handler.unset_keypad_application_mode(),
             // String terminator, do nothing (parser handles as string terminator).
-            (b'\\', None) => (),
+            (b'\\', []) => (),
             _ => unhandled!(),
         }
     }

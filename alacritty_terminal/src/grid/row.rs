@@ -13,7 +13,7 @@ use crate::index::Column;
 use crate::term::cell::ResetDiscriminant;
 
 /// A row in the grid.
-#[derive(Default, Clone, Debug, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Default, Clone, Debug)]
 pub struct Row<T> {
     inner: Vec<T>,
 
@@ -29,6 +29,14 @@ impl<T: PartialEq> PartialEq for Row<T> {
         self.inner == other.inner
     }
 }
+
+impl Row<crate::term::cell::Cell> {
+    pub fn to_string(&self) -> String {
+        let row_string: String = self.inner.clone().into_iter().map(|cell| cell.c).collect();
+        row_string
+    }
+}
+
 
 impl<T: Clone + Default> Row<T> {
     /// Create a new terminal row.

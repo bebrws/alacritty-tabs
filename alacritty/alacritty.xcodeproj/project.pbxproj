@@ -3,51 +3,51 @@
 	archiveVersion = 1;
 	objectVersion = 42;
 	objects = {
-		CA60BF779150E1549F807456 = {
+		CA602846E240FA2F7F7B573E = {
 			isa = PBXGroup;
 			children = (
-				CA60C0AAA1A9508D605C11C4,
-CA60AF545C2BA31184BD2724,
+				CA60BA8367406B44554EE9EE,
+CA60B14C2D07DFFA7620260E,
 
 			);
 			sourceTree = "<group>";
 		};
 
 		
-		CA60483A2AE240786BFCC62E /* bin */ = {
+		CA603D1D1FC8256B5833F07B /* bin */ = {
 			isa = PBXFileReference;
 			explicitFileType = "compiled.mach-o.executable";
 			includeInIndex = 0;
 			name = alacritty;
 			sourceTree = BUILT_PRODUCTS_DIR;
-		};CA605B028EC4CF3F84A9B5E5 /* alacritty-bin */ = {
+		};CA60F2703AE7C85A728E823D /* alacritty-bin */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = CA60AF5C23250204EE1FA986;
+			buildConfigurationList = CA60B1C57D2B0F66DA29AB01;
 			buildPhases = (
-				CA608B6CF052ED79D7512C9D
+				CA60CCFF1835AB2D3BF55CFC
 			);
 			buildRules = (
 			);
 			dependencies = (
-				CA600DACA57824F91D7C3948
+				CA608E5CCDB52E9A1200E7D7
 			);
 			name = "alacritty-bin";
 			productName = "alacritty";
-			productReference = CA60483A2AE240786BFCC62E;
+			productReference = CA603D1D1FC8256B5833F07B;
 			productType = "com.apple.product-type.tool";
 		};
-		CA60E8914D92CA6510EA2D44 = {
+		CA603FACDE2863B3D2365995 = {
 			isa = PBXAggregateTarget;
-			buildConfigurationList = CA604F23F06E393BA0E2D67A;
+			buildConfigurationList = CA600E4950F77CD091ACBABB;
 			buildPhases = (
-				CA60E9445A0E7C9BD2B6AB16
+				CA605391D7A5C9485E1D2827
 			);
 			dependencies = (
 			);
 			name = Cargo;
 			productName = Cargo;
 		};
-			CA608B6CF052ED79D7512C9D = {
+			CA60CCFF1835AB2D3BF55CFC = {
 					isa = PBXShellScriptBuildPhase;
 					buildActionMask = 2147483647;
 					name = "Copy files (alacritty)";
@@ -68,16 +68,16 @@ CA60AF545C2BA31184BD2724,
 					shellScript = "ln -f \"${CARGO_XCODE_PRODUCTS_DIR}/alacritty\" \"${BUILT_PRODUCTS_DIR}/\"";
 				};
 				
-		CA60AF5C23250204EE1FA986 /* bin */ = {
+		CA60B1C57D2B0F66DA29AB01 /* bin */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				CA60DEFD5E800D02F3E9FA5D /* Release */,
-				CA60E0A6DFC9DC085CD3FDD4 /* Debug */,
+				CA6084BDE501823061ECF72B /* Release */,
+				CA60010BEEDE678C57A451D8 /* Debug */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-			CA60DEFD5E800D02F3E9FA5D /* bin */ = {
+			CA6084BDE501823061ECF72B /* bin */ = {
 				isa = XCBuildConfiguration;
 				buildSettings = {
 					PRODUCT_NAME = "alacritty";
@@ -85,14 +85,14 @@ CA60AF545C2BA31184BD2724,
 				};
 				name = Release;
 			};
-			CA60E0A6DFC9DC085CD3FDD4 /* bin */ = {
+			CA60010BEEDE678C57A451D8 /* bin */ = {
 				isa = XCBuildConfiguration;
 				buildSettings = {
 					PRODUCT_NAME = "alacritty";
 					
 				};
 				name = Debug;
-			};CA60E9445A0E7C9BD2B6AB16 = {
+			};CA605391D7A5C9485E1D2827 = {
 				isa = PBXShellScriptBuildPhase;
 				buildActionMask = 2147483647;
 				name = "Cargo build";
@@ -118,7 +118,7 @@ fi
 ";
 		};
 			
-				CA60C0AAA1A9508D605C11C4 /* Cargo.toml */ = {
+				CA60BA8367406B44554EE9EE /* Cargo.toml */ = {
 					isa = PBXFileReference;
 					lastKnownFileType = "sourcecode.text-based-dylib-definition";
 					fileEncoding = 4;
@@ -126,41 +126,41 @@ fi
 					sourceTree = "<group>";
 			};
 
-		CA60AF545C2BA31184BD2724 = {
+		CA60B14C2D07DFFA7620260E = {
 			isa = PBXGroup;
 			children = (
-				CA60483A2AE240786BFCC62E,
+				CA603D1D1FC8256B5833F07B,
 
 			);
 			name = Products;
 			sourceTree = "<group>";
 		};
 
-		CA60D11977A7491C6540FE60 = {
+		CA6006EAF0A563F2C05D7786 = {
 			isa = PBXContainerItemProxy;
-			containerPortal = CA60E31A651250E4BC580CE2;
+			containerPortal = CA609E02345068F123C373C8;
 			proxyType = 1;
-			remoteGlobalIDString = CA60E8914D92CA6510EA2D44;
+			remoteGlobalIDString = CA603FACDE2863B3D2365995;
 			remoteInfo = Cargo;
 		};
 
-		CA600DACA57824F91D7C3948 = {
+		CA608E5CCDB52E9A1200E7D7 = {
 			isa = PBXTargetDependency;
-			target = CA60E8914D92CA6510EA2D44;
-			targetProxy = CA60D11977A7491C6540FE60;
+			target = CA603FACDE2863B3D2365995;
+			targetProxy = CA6006EAF0A563F2C05D7786;
 		};
 
-		CA604F23F06E393BA0E2D67A = {
+		CA600E4950F77CD091ACBABB = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				CA60A2F209B80E05BB3BBD73 /* Release */,
-				CA6045ECD6981F61E635B90A /* Debug */,
+				CA60CD82BCA6D3D773CA43C1 /* Release */,
+				CA60E7B349C5C39F545FE462 /* Debug */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
 
-		CA60A2F209B80E05BB3BBD73 = {
+		CA60CD82BCA6D3D773CA43C1 = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CARGO_TARGET_DIR = "$(BUILD_DIR)/cargo-target"; /* for cargo */
@@ -174,7 +174,7 @@ fi
 			name = Release;
 		};
 
-		CA6045ECD6981F61E635B90A = {
+		CA60E7B349C5C39F545FE462 = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CARGO_TARGET_DIR = "$(BUILD_DIR)/cargo-target";
@@ -188,34 +188,34 @@ fi
 			name = Debug;
 		};
 
-		CA60E31A651250E4BC580CE2 = {
+		CA609E02345068F123C373C8 = {
 			isa = PBXProject;
 			attributes = {
 				LastUpgradeCheck = 0920;
 				TargetAttributes = {
-					CA605B028EC4CF3F84A9B5E5 = {
+					CA60F2703AE7C85A728E823D = {
 						CreatedOnToolsVersion = 9.2;
 						ProvisioningStyle = Automatic;
 					};
-					CA60E8914D92CA6510EA2D44 = {
+					CA603FACDE2863B3D2365995 = {
 						CreatedOnToolsVersion = 9.2;
 						ProvisioningStyle = Automatic;
 					};
 					                };
 			};
-			buildConfigurationList = CA604F23F06E393BA0E2D67A;
+			buildConfigurationList = CA600E4950F77CD091ACBABB;
 			compatibilityVersion = "Xcode 8.0";
-			mainGroup = CA60BF779150E1549F807456;
-			productRefGroup = CA60AF545C2BA31184BD2724;
+			mainGroup = CA602846E240FA2F7F7B573E;
+			productRefGroup = CA60B14C2D07DFFA7620260E;
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				CA605B028EC4CF3F84A9B5E5,
-CA60E8914D92CA6510EA2D44,
+				CA60F2703AE7C85A728E823D,
+CA603FACDE2863B3D2365995,
 
 			);
 		};
 	};
-	rootObject = CA60E31A651250E4BC580CE2;
+	rootObject = CA609E02345068F123C373C8;
 }
 	

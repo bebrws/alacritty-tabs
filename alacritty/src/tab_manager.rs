@@ -1,7 +1,7 @@
 use libc::winsize;
 use std::io;
 
-use mio::unix::EventedFd;
+
 use std::os::unix::io::AsRawFd;
 use std::{
     ffi::OsStr,
@@ -19,10 +19,7 @@ use std::io::Write;
 
 use std::ops::{Deref, Index, IndexMut, Range, RangeFrom, RangeFull, RangeInclusive, RangeTo};
 
-use mio::event::Iter;
-use mio::unix::UnixReady;
-use mio::{self, Events, Poll, PollOpt, Ready, Token};
-use mio_extras::channel::{channel, Receiver, Sender};
+
 
 use std::marker::PhantomData;
 
@@ -40,7 +37,7 @@ use log::{debug, error, info, warn};
 
 use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::Term;
-use alacritty_terminal::tty;
+
 
 use alacritty_terminal::term::SizeInfo;
 
@@ -95,7 +92,6 @@ pub struct TabManager {
 
 impl TabManager {
     pub fn new(event_proxy: crate::event::EventProxy, config: Config) -> TabManager {
-        
         let mut tm = Self {
             selected_tab: None,
             tabs: Vec::new(),
@@ -120,7 +116,7 @@ impl TabManager {
             let term_sz = sz.clone();
             terminal.resize(term_sz);
             drop(terminal_guard);
-    
+
             let pty_mutex = tab.pty.clone();
             let mut pty_guard = pty_mutex.lock();
             let mut pty = &mut *pty_guard;
@@ -143,20 +139,14 @@ impl TabManager {
                     idx + 1
                 }
             },
-            None => {
-                0
-            }
+            None => 0,
         }
     }
 
     pub fn new_tab(&mut self) -> Result<usize> {
         let tab_idx = match self.selected_tab {
-            Some(idx) => {
-                idx + 1
-            },
-            None => {
-                0
-            }
+            Some(idx) => idx + 1,
+            None => 0,
         };
         info!("Creating new tab {}\n", tab_idx);
         info!("Default shell {}\n", DEFAULT_SHELL);
@@ -184,8 +174,6 @@ impl TabManager {
         }
 
         info!("Inserted and selected new tab {}\n", tab_idx);
-        
-        
 
         let event_proxy = self.event_proxy.clone();
         thread::spawn(move || {
@@ -193,7 +181,7 @@ impl TabManager {
             loop {
                 let mut buffer: [u8; crate::child_pty::PTY_BUFFER_SIZE] =
                     [0; crate::child_pty::PTY_BUFFER_SIZE];
-                    
+
                 match pty_output_file.read(&mut buffer) {
                     Ok(rlen) => {
                         if rlen > 0 {
@@ -201,13 +189,16 @@ impl TabManager {
                             let mut terminal = &mut *terminal_guard;
                             let mut pty_guard = pty_arc.lock();
                             let mut unlocked_pty = &mut *pty_guard;
-                            // terminal.dirty = true;
+                            
                             // event_proxy.send_event(crate::event::Event::TerminalEvent(
                             //     alacritty_terminal::event::Event::Wakeup,
                             // ));
                             buffer.into_iter().for_each(|byte| {
                                 processor.advance(terminal, *byte, &mut unlocked_pty)
                             });
+
+                            terminal.dirty = true;
+                            
                             drop(pty_guard);
                             drop(terminal_guard);
                         }
@@ -215,7 +206,7 @@ impl TabManager {
                         if rlen == 0 {
                             // Close this tty
                             event_proxy.send_event(crate::event::Event::TerminalEvent(
-                                    alacritty_terminal::event::Event::Close(tab_idx),
+                                alacritty_terminal::event::Event::Close(tab_idx),
                             ));
                             break; // break out of loop
                         }
@@ -235,9 +226,7 @@ impl TabManager {
             Some(idx) => {
                 self.tabs.remove(idx);
             },
-            None => {
-
-            }
+            None => {},
         };
 
         if self.tabs.len() == 0 {
@@ -248,7 +237,7 @@ impl TabManager {
                 },
                 Err(e) => {
                     // println!("Error creating new tab");
-                }
+                },
             }
         } else {
             let next_idx = self.next_tab_idx().unwrap();
@@ -264,9 +253,7 @@ impl TabManager {
 
     pub fn selected_tab(&mut self) -> Option<&Tab> {
         match self.selected_tab {
-            Some(sel_idx) => {
-                self.tabs.get(sel_idx)
-            },
+            Some(sel_idx) => self.tabs.get(sel_idx),
             None => {
                 if self.tabs.len() == 0 {
                     match self.new_tab() {
@@ -275,20 +262,18 @@ impl TabManager {
                         },
                         Err(e) => {
                             error!("Error creating new tab");
-                        }
+                        },
                     }
                 }
                 self.selected_tab = Some(0);
                 self.tabs.get(0)
-            }
+            },
         }
     }
 
     pub fn selected_tab_mut(&mut self) -> Option<&mut Tab> {
         match self.selected_tab {
-            Some(sel_idx) => {
-                self.tabs.get_mut(sel_idx)
-            },
+            Some(sel_idx) => self.tabs.get_mut(sel_idx),
             None => {
                 if self.tabs.len() == 0 {
                     match self.new_tab() {
@@ -297,12 +282,12 @@ impl TabManager {
                         },
                         Err(e) => {
                             error!("Error creating new tab");
-                        }
+                        },
                     }
                 }
                 self.selected_tab = Some(0);
                 self.tabs.get_mut(0)
-            }
+            },
         }
     }
 
@@ -339,9 +324,7 @@ impl TabManager {
                     Some(idx + 1)
                 }
             },
-            None => {
-                None
-            }
+            None => None,
         }
     }
 
@@ -359,9 +342,7 @@ impl TabManager {
                     Some(idx - 1)
                 }
             },
-            None => {
-                None
-            }
+            None => None,
         }
     }
 
@@ -431,9 +412,7 @@ impl Tab {
         };
 
         let args: [&str; 0] = [];
-        let pty = Arc::new(FairMutex::new(
-            ChildPty::new(command, &args, new_winsize).unwrap(),
-        ));
+        let pty = Arc::new(FairMutex::new(ChildPty::new(command, &args, new_winsize).unwrap()));
 
         Tab { pty, terminal }
     }

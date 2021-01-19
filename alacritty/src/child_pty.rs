@@ -9,13 +9,9 @@ use std::{
 };
 use std::os::unix::io::AsRawFd;
 
-use alacritty_terminal::tty::ToWinsize;
+
 
 use std::sync::{Arc, Mutex};
-use mio::event::{Iter};
-use mio::{self, Token, Poll, Events, PollOpt, Ready};
-use mio::unix::UnixReady;
-use mio_extras::channel::{Receiver, Sender, channel};
 use alacritty_terminal::term::SizeInfo;
 
 use std::io;
@@ -26,10 +22,7 @@ use libc::{self, c_int, pid_t, winsize, TIOCSCTTY};
 
 use signal_hook::{self as sighook, iterator::Signals};
 
-// use futures::{
-//     channel::mpsc::{self, Receiver},
-//     executor, future,
-// };
+
 
 use nix::pty::openpty;
 
@@ -50,6 +43,29 @@ mod ioctl {
     nix::ioctl_none_bad!(set_controlling, libc::TIOCSCTTY);
     nix::ioctl_write_ptr_bad!(win_resize, libc::TIOCSWINSZ, libc::winsize);
 }
+
+
+
+
+
+/// Types that can produce a `libc::winsize`.
+pub trait ToWinsize {
+    /// Get a `libc::winsize`.
+    fn to_winsize(&self) -> winsize;
+}
+
+impl<'a> ToWinsize for &'a SizeInfo {
+    fn to_winsize(&self) -> winsize {
+        winsize {
+            ws_row: self.screen_lines().0 as libc::c_ushort,
+            ws_col: self.cols().0 as libc::c_ushort,
+            ws_xpixel: self.width() as libc::c_ushort,
+            ws_ypixel: self.height() as libc::c_ushort,
+        }
+    }
+}
+
+
 
 
 
@@ -101,6 +117,11 @@ impl Clone for ChildPty {
         }
     }
 }
+
+
+
+
+
 
 
 impl ChildPty {

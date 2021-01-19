@@ -13,19 +13,16 @@
 #[cfg(not(any(feature = "x11", feature = "wayland", target_os = "macos", windows)))]
 compile_error!(r#"at least one of the "x11"/"wayland" features must be enabled"#);
 
-use mio::event::Iter;
+
 #[cfg(target_os = "macos")]
-use std::env;
+use std::path::PathBuf;
+use std::{env, io};
 use std::error::Error;
 use std::fs;
-use std::io::{self, Write};
+use std::io::Write;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use mio::unix::EventedFd;
-use mio::unix::UnixReady;
-use mio::{self, Events, Poll, PollOpt, Ready, Token};
-use mio_extras::channel::{channel, Receiver, Sender};
 use std::os::unix::io::AsRawFd;
 
 use glutin::event_loop::EventLoop as GlutinEventLoop;
@@ -33,10 +30,9 @@ use log::{error, info};
 #[cfg(windows)]
 use winapi::um::wincon::{AttachConsole, FreeConsole, ATTACH_PARENT_PROCESS};
 
-use alacritty_terminal::event_loop::{self, EventLoop, Msg};
 use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::Term;
-use alacritty_terminal::tty;
+
 
 use crate::tab_manager::TabManager;
 
@@ -63,7 +59,6 @@ mod passwd;
 mod renderer;
 mod scheduler;
 mod tab_manager;
-mod tty_spawn;
 mod url;
 mod window;
 
@@ -85,7 +80,6 @@ use crate::macos::locale;
 use crate::message_bar::MessageBuffer;
 
 fn main() {
-    color_backtrace::install();
 
     #[cfg(windows)]
     panic::attach_handler();
@@ -149,13 +143,11 @@ fn run(
 ) -> Result<(), Box<dyn Error>> {
     info!("Welcome to Alacritty");
 
-    info!("Configuration files loaded from:");
-    for path in &config.ui_config.config_paths {
-        info!("  \"{}\"", path.display());
-    }
+    // Log the configuration paths.
+    log_config_path(&config);
 
     // Set environment variables.
-    tty::setup_env(&config);
+    setup_env(&config);
 
     let event_proxy = EventProxy::new(window_event_loop.create_proxy());
 
@@ -178,29 +170,41 @@ fn run(
     let tab_manager = &mut *tab_manager_main_guard;
     tab_manager.set_size(display.size_info.clone());
 
-    
     let idx = tab_manager.new_tab().unwrap();
     tab_manager.select_tab(idx);
-    
+
     drop(tab_manager_main_guard);
 
-    let event_proxy_clone  = event_proxy.clone();
-    std::thread::spawn(move || {
-        loop {
-            std::thread::sleep(Duration::from_millis(100));
-                            
+    let event_proxy_clone = event_proxy.clone();
+    let tab_manager_draw_mutex = tab_manager_mutex.clone();
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_millis(100));
+
+        // let mut tab_manager_main_guard = tab_manager_draw_mutex.lock();
+        // let tab_manager = &mut *tab_manager_main_guard;
+       
+        // let tab = tab_manager.selected_tab().unwrap();
+
+        // let terminal_arc = tab.terminal.clone();
+        // let mut terminal_guard = terminal_arc.lock();
+        // let mut terminal = &mut *terminal_guard;
+
+        // if terminal.dirty {
             event_proxy_clone.send_event(crate::event::Event::TerminalEvent(
                 alacritty_terminal::event::Event::Wakeup,
             ));
-        }
-    });
+        // }
     
+        // drop(terminal_guard);
+        // drop(tab_manager_main_guard);
+
+    });
 
     // Create a config monitor when config was loaded from path.
     //
     // The monitor watches the config file for changes and reloads it. Pending
     // config changes are processed in the main loop.
-    if config.ui_config.live_config_reload() {
+    if config.ui_config.live_config_reload {
         monitor::watch(config.ui_config.config_paths.clone(), event_proxy);
     }
 
@@ -248,4 +252,79 @@ fn run(
     info!("Goodbye");
 
     Ok(())
+}
+
+fn log_config_path(config: &Config) {
+    let mut msg = String::from("Configuration files loaded from:");
+    for path in &config.ui_config.config_paths {
+        msg.push_str(&format!("\n  {:?}", path.display()));
+    }
+
+    info!("{}", msg);
+}
+
+
+pub fn setup_env(config: &Config) {
+    // Default to 'alacritty' terminfo if it is available, otherwise
+    // default to 'xterm-256color'. May be overridden by user's config
+    // below.
+    let terminfo = if terminfo_exists("alacritty") { "alacritty" } else { "xterm-256color" };
+    env::set_var("TERM", terminfo);
+
+    // Advertise 24-bit color support.
+    env::set_var("COLORTERM", "truecolor");
+
+    // Prevent child processes from inheriting startup notification env.
+    env::remove_var("DESKTOP_STARTUP_ID");
+
+    // Set env vars from config.
+    for (key, value) in config.env.iter() {
+        env::set_var(key, value);
+    }
+}
+
+
+/// Check if a terminfo entry exists on the system.
+fn terminfo_exists(terminfo: &str) -> bool {
+    // Get first terminfo character for the parent directory.
+    let first = terminfo.get(..1).unwrap_or_default();
+    let first_hex = format!("{:x}", first.chars().next().unwrap_or_default() as usize);
+
+    // Return true if the terminfo file exists at the specified location.
+    macro_rules! check_path {
+        ($path:expr) => {
+            if $path.join(first).join(terminfo).exists()
+                || $path.join(&first_hex).join(terminfo).exists()
+            {
+                return true;
+            }
+        };
+    }
+
+    if let Some(dir) = env::var_os("TERMINFO") {
+        check_path!(PathBuf::from(&dir));
+    } else if let Some(home) = dirs::home_dir() {
+        check_path!(home.join(".terminfo"));
+    }
+
+    if let Ok(dirs) = env::var("TERMINFO_DIRS") {
+        for dir in dirs.split(':') {
+            check_path!(PathBuf::from(dir));
+        }
+    }
+
+    if let Ok(prefix) = env::var("PREFIX") {
+        let path = PathBuf::from(prefix);
+        check_path!(path.join("etc/terminfo"));
+        check_path!(path.join("lib/terminfo"));
+        check_path!(path.join("share/terminfo"));
+    }
+
+    check_path!(PathBuf::from("/etc/terminfo"));
+    check_path!(PathBuf::from("/lib/terminfo"));
+    check_path!(PathBuf::from("/usr/share/terminfo"));
+    check_path!(PathBuf::from("/boot/system/data/terminfo"));
+
+    // No valid terminfo path has been found.
+    false
 }

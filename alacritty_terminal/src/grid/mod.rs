@@ -5,6 +5,10 @@ use std::ops::{Deref, Index, IndexMut, Range, RangeFrom, RangeFull, RangeInclusi
 
 use serde::{Deserialize, Serialize};
 
+use crate::sync::FairMutex;
+use regex::Regex;
+use std::sync::{Arc, Mutex};
+
 use crate::ansi::{CharsetIndex, StandardCharset};
 use crate::index::{Column, IndexRange, Line, Point};
 use crate::term::cell::{Flags, ResetDiscriminant};
@@ -126,7 +130,7 @@ impl IndexMut<CharsetIndex> for Charsets {
 ///                           ^
 ///                          cols
 /// ```
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Grid<T> {
     /// Current cursor for writing data.
     #[serde(skip)]
@@ -155,6 +159,21 @@ pub struct Grid<T> {
 
     /// Maximum number of lines in history.
     max_scroll_limit: usize,
+}
+
+impl Grid<crate::term::cell::Cell> {
+    pub fn to_string_vector(&self) -> Vec<String> {
+        let mut lines: Vec<String> =  Vec::new();
+        for row_idx in 0..self.raw.len() {
+            let row = self.raw[row_idx].clone();
+            lines.push(row.to_string());
+        }
+        lines
+    }
+    
+    pub fn to_string(&self) -> String {
+        self.to_string_vector().join("\n")
+    }
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -223,25 +242,49 @@ impl<T: GridCell + Default + PartialEq + Clone> Grid<T> {
         T: ResetDiscriminant<D>,
         D: PartialEq,
     {
-        // Whether or not there is a scrolling region active, as long as it
-        // starts at the top, we can do a full rotation which just involves
-        // changing the start index.
-        //
-        // To accommodate scroll regions, rows are reordered at the end.
-        if region.start == Line(0) && self.max_scroll_limit == 0 {
-            // Rotate the entire line buffer. If there's a scrolling region
-            // active, the bottom lines are restored in the next step.
-            self.raw.rotate_up(*positions);
+        let screen_lines = self.screen_lines().0;
 
-            // Now, restore any scroll region lines.
-            let lines = self.lines;
-            for i in IndexRange(region.end..lines) {
-                self.raw.swap_lines(i, i + positions);
+        // When rotating the entire region, just reset everything.
+        if positions >= region.end - region.start {
+            for i in region.start.0..region.end.0 {
+                let index = screen_lines - i - 1;
+                self.raw[index].reset(&self.cursor.template);
             }
 
-            // Finally, reset recycled lines.
-            for i in IndexRange(Line(0)..positions) {
-                self.raw[i].reset(&self.cursor.template);
+            return;
+        }
+
+        // Which implementation we can use depends on the existence of a scrollback history.
+        //
+        // Since a scrollback history prevents us from rotating the entire buffer downwards, we
+        // instead have to rely on a slower, swap-based implementation.
+        if self.max_scroll_limit == 0 {
+            // Swap the lines fixed at the bottom to their target positions after rotation.
+            //
+            // Since we've made sure that the rotation will never rotate away the entire region, we
+            // know that the position of the fixed lines before the rotation must already be
+            // visible.
+            //
+            // We need to start from the top, to make sure the fixed lines aren't swapped with each
+            // other.
+            let fixed_lines = screen_lines - region.end.0;
+            for i in (0..fixed_lines).rev() {
+                self.raw.swap(i, i + positions.0);
+            }
+
+            // Rotate the entire line buffer downward.
+            self.raw.rotate_down(*positions);
+
+            // Ensure all new lines are fully cleared.
+            for i in 0..positions.0 {
+                let index = screen_lines - i - 1;
+                self.raw[index].reset(&self.cursor.template);
+            }
+
+            // Swap the fixed lines at the top back into position.
+            for i in 0..region.start.0 {
+                let index = screen_lines - i - 1;
+                self.raw.swap(index, index - positions.0);
             }
         } else {
             // Subregion rotation.
@@ -263,46 +306,51 @@ impl<T: GridCell + Default + PartialEq + Clone> Grid<T> {
         T: ResetDiscriminant<D>,
         D: PartialEq,
     {
-        let num_lines = self.screen_lines().0;
+        let screen_lines = self.screen_lines().0;
 
-        if region.start == Line(0) {
-            // Update display offset when not pinned to active area.
-            if self.display_offset != 0 {
-                self.display_offset = min(self.display_offset + *positions, self.max_scroll_limit);
+        // When rotating the entire region with fixed lines at the top, just reset everything.
+        if positions >= region.end - region.start && region.start != Line(0) {
+            for i in region.start.0..region.end.0 {
+                let index = screen_lines - i - 1;
+                self.raw[index].reset(&self.cursor.template);
             }
 
-            self.increase_scroll_limit(*positions);
+            return;
+        }
 
-            // Rotate the entire line buffer. If there's a scrolling region
-            // active, the bottom lines are restored in the next step.
-            self.raw.rotate(-(*positions as isize));
+        // Update display offset when not pinned to active area.
+        if self.display_offset != 0 {
+            self.display_offset = min(self.display_offset + *positions, self.max_scroll_limit);
+        }
 
-            // This next loop swaps "fixed" lines outside of a scroll region
-            // back into place after the rotation. The work is done in buffer-
-            // space rather than terminal-space to avoid redundant
-            // transformations.
-            let fixed_lines = num_lines - *region.end;
+        // Create scrollback for the new lines.
+        self.increase_scroll_limit(*positions);
 
-            for i in 0..fixed_lines {
-                self.raw.swap(i, i + *positions);
-            }
+        // Swap the lines fixed at the top to their target positions after rotation.
+        //
+        // Since we've made sure that the rotation will never rotate away the entire region, we
+        // know that the position of the fixed lines before the rotation must already be
+        // visible.
+        //
+        // We need to start from the bottom, to make sure the fixed lines aren't swapped with each
+        // other.
+        for i in (0..region.start.0).rev() {
+            let index = screen_lines - i - 1;
+            self.raw.swap(index, index - positions.0);
+        }
 
-            // Finally, reset recycled lines.
-            //
-            // Recycled lines are just above the end of the scrolling region.
-            for i in 0..*positions {
-                self.raw[i + fixed_lines].reset(&self.cursor.template);
-            }
-        } else {
-            // Subregion rotation.
-            for line in IndexRange(region.start..(region.end - positions)) {
-                self.raw.swap_lines(line, line + positions);
-            }
+        // Rotate the entire line buffer upward.
+        self.raw.rotate(-(positions.0 as isize));
 
-            // Clear reused lines.
-            for line in IndexRange((region.end - positions)..region.end) {
-                self.raw[line].reset(&self.cursor.template);
-            }
+        // Ensure all new lines are fully cleared.
+        for i in 0..positions.0 {
+            self.raw[i].reset(&self.cursor.template);
+        }
+
+        // Swap the fixed lines at the bottom back into position.
+        let fixed_lines = screen_lines - region.end.0;
+        for i in 0..fixed_lines {
+            self.raw.swap(i, i + positions.0);
         }
     }
 
@@ -395,12 +443,20 @@ impl<T> Grid<T> {
     /// Convert viewport relative point to global buffer indexing.
     #[inline]
     pub fn visible_to_buffer(&self, point: Point) -> Point<usize> {
+        // let ln: i64 = (self.lines.0 + self.display_offset - point.line.0 - 1) as i64;
+        // Point { line: if ln > 0 { ln as usize } else { 0 } , col: point.col }
+
         Point { line: self.lines.0 + self.display_offset - point.line.0 - 1, col: point.col }
     }
 
     #[inline]
-    pub fn display_iter(&self) -> DisplayIter<'_, T> {
-        DisplayIter::new(self)
+    pub fn display_iter(
+        &self,
+        grep_search: bool,
+        search_query: String,
+        grep_after: usize,
+    ) -> DisplayIter<'_, T> {
+        DisplayIter::new(self, grep_search, search_query, grep_after)
     }
 
     #[inline]
@@ -767,16 +823,70 @@ pub struct DisplayIter<'a, T> {
     limit: usize,
     col: Column,
     line: Line,
+    grep_search: bool,
+    search_query: String,
+    line_string: String,
+    last_line: Option<usize>,
+    re: Regex,
+    after_lines: usize,
+    after_lines_left: usize,
 }
 
 impl<'a, T: 'a> DisplayIter<'a, T> {
-    pub fn new(grid: &'a Grid<T>) -> DisplayIter<'a, T> {
-        let offset = grid.display_offset + *grid.screen_lines() - 1;
-        let limit = grid.display_offset;
-        let col = Column(0);
-        let line = Line(0);
+    pub fn new(
+        grid: &'a Grid<T>,
+        grep_search: bool,
+        search_query: String,
+        after_lines: usize,
+    ) -> DisplayIter<'a, T> {
+        let re = regex::Regex::new(&search_query).unwrap();
 
-        DisplayIter { grid, offset, col, limit, line }
+        if grep_search {
+            // let offset = grid.total_lines() - grid.display_offset;
+            // println!("grid.display_offset {}", grid.display_offset);
+            let offset = grid.total_lines() - 1 - grid.display_offset;
+            // println!("offset  {}", offset);
+            // println!("grid.total_lines  {}", grid.total_lines());
+            // println!("grid.screen_lines  {}", grid.screen_lines());
+
+            let limit = 0;
+            let col = Column(0);
+            // let line = Line(self.offset);
+            let line = Line(0);
+            DisplayIter {
+                grid,
+                offset,
+                col,
+                limit,
+                line,
+                grep_search,
+                search_query,
+                line_string: "".to_string(),
+                last_line: Some(0),
+                re,
+                after_lines: after_lines,
+                after_lines_left: 0,
+            }
+        } else {
+            let offset = grid.display_offset + *grid.screen_lines() - 1;
+            let limit = grid.display_offset;
+            let col = Column(0);
+            let line = Line(0);
+            DisplayIter {
+                grid,
+                offset,
+                col,
+                limit,
+                line,
+                grep_search,
+                search_query,
+                line_string: "".to_string(),
+                last_line: Some(0),
+                re,
+                after_lines: after_lines,
+                after_lines_left: 0,
+            }
+        }
     }
 
     pub fn offset(&self) -> usize {
@@ -788,30 +898,95 @@ impl<'a, T: 'a> DisplayIter<'a, T> {
     }
 }
 
-impl<'a, T: 'a> Iterator for DisplayIter<'a, T> {
-    type Item = Indexed<&'a T>;
+impl<'a> Iterator for DisplayIter<'a, crate::term::cell::Cell> {
+    type Item = Indexed<&'a crate::term::cell::Cell>;
 
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
-        // Return None if we've reached the end.
-        if self.offset == self.limit && self.grid.cols() == self.col {
-            return None;
-        }
+        let mut item: Option<Self::Item> = None;
 
-        // Get the next item.
-        let item = Some(Indexed {
-            inner: &self.grid.raw[self.offset][self.col],
-            line: self.line,
-            column: self.col,
-        });
+        if self.grep_search {
+            // Return None if we've reached the end.
+            if self.offset == 0 && self.grid.cols() == self.col {
+                return None;
+            }
 
-        // Update line/col to point to next item.
-        self.col += 1;
-        if self.col == self.grid.cols() && self.offset != self.limit {
-            self.offset -= 1;
+            if self.last_line.is_some() && self.last_line.unwrap() != self.offset {
+                self.last_line = Some(self.offset);
+                let mut line_row: Row<crate::term::cell::Cell> = self.grid.raw[self.offset].clone();
+                let new_line_string: String = line_row.into_iter().map(|cell| cell.c).collect();
+                self.line_string = new_line_string;
 
-            self.col = Column(0);
-            self.line = Line(*self.grid.lines - 1 - (self.offset - self.limit));
+                let found_string_in_line = self.line_string.contains(&self.search_query) || self.re.is_match(&self.line_string);
+                if self.after_lines_left > 0 || found_string_in_line {
+                    if found_string_in_line {
+                        self.after_lines_left = self.after_lines;
+                    } else {
+                        self.after_lines_left -= 1;
+                    }
+                        self.col = Column(0);
+                        self.line = Line(self.line.0 + 1);
+                } else {
+                    loop {
+                        if self.offset == 0 {
+                            return None;
+                        }
+        
+                        self.offset -= 1;
+    
+                        let mut line_row: Row<crate::term::cell::Cell> = self.grid.raw[self.offset].clone();
+                        let new_line_string: String = line_row.into_iter().map(|cell| cell.c).collect();
+                        self.line_string = new_line_string;
+                        let found_string_in_line = self.line_string.contains(&self.search_query) || self.re.is_match(&self.line_string);
+
+                        if found_string_in_line {
+                            self.col = Column(0);
+                            self.line = Line(self.line.0 + 1);
+                            self.after_lines_left = self.after_lines;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            let mut indexed = Indexed {
+                inner: &self.grid.raw[self.offset][self.col],
+                line: self.line,
+                column: self.col,
+            };
+            item = Some(indexed);
+
+            // Update line/col to point to next item.
+            self.col += 1;
+            if self.col == self.grid.cols() {
+                if self.offset == 0 {
+                    return None;
+                }
+                self.offset -= 1;
+                self.col = Column(0);
+                // self.line = Line(self.offset);
+            }
+        } else {
+            // Return None if we've reached the end.
+            if self.offset == self.limit && self.grid.cols() == self.col {
+                return None;
+            }
+
+            // Get the next item.
+            item = Some(Indexed {
+                inner: &self.grid.raw[self.offset][self.col],
+                line: self.line,
+                column: self.col,
+            });
+
+            // Update line/col to point to next item.
+            self.col += 1;
+            if self.col == self.grid.cols() && self.offset != self.limit {
+                self.offset -= 1;
+
+                self.col = Column(0);
+                self.line = Line(*self.grid.lines - 1 - (self.offset - self.limit));
+            }
         }
 
         item
