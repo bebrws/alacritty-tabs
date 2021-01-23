@@ -207,6 +207,15 @@ impl<T: EventListener> Execute<T> for Action {
                 let next_tab = tab_manager.next_tab_idx().unwrap();
                 // println!("next tab is {}", next_tab);
                 tab_manager.select_tab(next_tab);
+
+                let mut tab = &*tab_manager.selected_tab_arc();
+                let mut terminal_guard = tab.terminal.lock();
+                let mut terminal = &mut *terminal_guard;
+            
+                terminal.dirty = true;
+
+                drop(terminal_guard);
+                
                 drop(tbg);
             },
             Action::Esc(ref s) => {
