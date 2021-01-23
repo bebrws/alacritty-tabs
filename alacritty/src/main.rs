@@ -20,10 +20,9 @@ use std::{env, io};
 use std::error::Error;
 use std::fs;
 use std::io::Write;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
-use std::os::unix::io::AsRawFd;
 
 use glutin::event_loop::EventLoop as GlutinEventLoop;
 use log::{error, info};
@@ -153,7 +152,7 @@ fn run(
 
     let tab_manager = TabManager::new(event_proxy.clone(), config.clone());
 
-    let tab_manager_mutex = Arc::new(FairMutex::new(tab_manager));
+    let tab_manager_mutex = Arc::new(RwLock::new(tab_manager));
 
     // Create a display.
     //
@@ -166,7 +165,7 @@ fn run(
     );
 
     let tab_manager_mutex_main_clone = tab_manager_mutex.clone();
-    let mut tab_manager_main_guard = tab_manager_mutex_main_clone.lock();
+    let mut tab_manager_main_guard = tab_manager_mutex_main_clone.write().unwrap();
     let tab_manager = &mut *tab_manager_main_guard;
     tab_manager.set_size(display.size_info.clone());
 
@@ -180,10 +179,10 @@ fn run(
     std::thread::spawn(move || loop {
         std::thread::sleep(Duration::from_millis(100));
 
-        // let mut tab_manager_main_guard = tab_manager_draw_mutex.lock();
+        // let mut tab_manager_main_guard = tab_manager_draw_mutex.write().unwrap();
         // let tab_manager = &mut *tab_manager_main_guard;
        
-        // let tab = tab_manager.selected_tab().unwrap();
+        // let tab = &*tab_manager.selected_tab_arc();
 
         // let terminal_arc = tab.terminal.clone();
         // let mut terminal_guard = terminal_arc.lock();

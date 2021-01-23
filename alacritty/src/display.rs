@@ -9,7 +9,7 @@ use std::fmt::{self, Formatter};
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use glutin::dpi::{PhysicalPosition, PhysicalSize};
 use glutin::event::ModifiersState;
@@ -172,14 +172,14 @@ pub struct Display {
     renderer: QuadRenderer,
     glyph_cache: GlyphCache,
     meter: Meter,
-    tab_manager: Arc<FairMutex<TabManager>>,
+    tab_manager: Arc<RwLock<TabManager>>,
 }
 
 impl Display {
     pub fn new<E>(
         config: &Config,
         event_loop: &EventLoop<E>,
-        tab_manager: Arc<FairMutex<TabManager>>,
+        tab_manager: Arc<RwLock<TabManager>>,
     ) -> Result<Display, Error> {
         // Guess DPR based on first monitor.
         let estimated_dpr =
@@ -424,8 +424,8 @@ impl Display {
         self.size_info.reserve_lines(message_bar_lines + search_lines);
 
         let tm = self.tab_manager.clone();
-        let mut tab_manager_guard = tm.lock();
-        let tab_manager: &mut TabManager = &mut *tab_manager_guard;
+        let mut tab_manager_guard = tm.read().unwrap();
+        let tab_manager: &TabManager = & *tab_manager_guard;
         tab_manager.resize(self.size_info);
         drop(tab_manager_guard);
 
@@ -446,7 +446,7 @@ impl Display {
     /// This call may block if vsync is enabled.
     pub fn draw<T>(
         &mut self,
-        tab_manager: &mut TabManager,
+        tab_manager: & TabManager,
         terminal: &mut Term<T>,
         message_buffer: &MessageBuffer,
         config: &Config,
@@ -610,7 +610,7 @@ impl Display {
         }
 
         // let mut tm = self.tab_manager.clone();
-        // let mut tab_manager_guard = tm.lock();
+        // let mut tab_manager_guard = tm.read().unwrap();
         // let tab_manager = &mut *tab_manager_guard;
         let sel_tab = match tab_manager.selected_tab_idx() {
             Some(idx) => idx,
@@ -620,7 +620,7 @@ impl Display {
         let glyph_cache = &mut self.glyph_cache;
 
         let tab_min = 0;
-        let mut tab_max = tab_manager.tabs.len() - 1;
+        let mut tab_max = tab_manager.num_tabs() - 1;
 
         let tab_buttons = (tab_min..=tab_max)
             .map(|i| if i == sel_tab { format!("[*{:0>3}]", i) } else { format!("[{:0>3}]", i) })

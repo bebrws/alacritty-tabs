@@ -11,7 +11,7 @@ use log::trace;
 use std::borrow::Cow;
 use std::cmp::{max, min, Ordering};
 use std::marker::PhantomData;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use glutin::dpi::PhysicalPosition;
@@ -68,7 +68,7 @@ pub struct Processor<'a, T: EventListener, A: ActionContext<T>> {
 }
 
 pub trait ActionContext<T: EventListener> {
-    fn tab_manager(&self) -> Arc<FairMutex<TabManager>>;
+    fn tab_manager(&self) -> Arc<RwLock<TabManager>>;
     fn write_to_pty<B: Into<Cow<'static, [u8]>>>(&mut self, data: B);
     fn size_info(&self) -> SizeInfo;
     fn copy_selection(&mut self, ty: ClipboardType);
@@ -171,39 +171,39 @@ impl<T: EventListener> Execute<T> for Action {
     fn execute<A: ActionContext<T>>(&self, ctx: &mut A) {
         match *self {
             Action::NewTab => {
-                let mut tbarc = ctx.tab_manager().clone();
-                let mut tbg = tbarc.lock();
-                let mut tab_manager = &mut *tbg;
+                let tbarc = ctx.tab_manager().clone();
+                let tbg = tbarc.read().unwrap();
+                let tab_manager = & *tbg;
                 let idx = tab_manager.new_tab().unwrap();
                 tab_manager.select_tab(idx);
                 // println!("New tab is {}", idx);
-                let tab = tab_manager.selected_tab().unwrap();
-                let mut ta = tab.terminal.clone();
-                let mut tg = ta.lock();
-                let mut terminal = &mut *tg;
-                tg.dirty = true;
-                drop(tg);
+
+                let mut tab = &*tab_manager.selected_tab_arc();
+                let mut terminal_guard = tab.terminal.lock();
+                let mut terminal = &mut *terminal_guard;
+            
+                terminal.dirty = true;
+                drop(terminal_guard);
                 drop(tbg);
             },
             Action::PreviousTab => {
-                let mut tbarc = ctx.tab_manager().clone();
-                let mut tbg = tbarc.lock();
-                let mut tab_manager = &mut *tbg;
+                let tbarc = ctx.tab_manager().clone();
+                let tbg = tbarc.read().unwrap();
+                let tab_manager = & *tbg;
                 let prev_tab = tab_manager.prev_tab_idx().unwrap();
                 // println!("prev tab is {}", prev_tab);
                 tab_manager.select_tab(prev_tab);
-                let tab = tab_manager.selected_tab().unwrap();
-                let mut ta = tab.terminal.clone();
-                let mut tg = ta.lock();
-                let mut terminal = &mut *tg;
-                tg.dirty = true;
-                drop(tg);
+                let mut tab = &*tab_manager.selected_tab_arc();
+                let mut terminal_guard = tab.terminal.lock();
+                let mut terminal = &mut *terminal_guard;
+                terminal.dirty = true;
+                drop(terminal_guard);
                 drop(tbg);
             },            
             Action::NextTab => {
-                let mut tbarc = ctx.tab_manager().clone();
-                let mut tbg = tbarc.lock();
-                let mut tab_manager = &mut *tbg;
+                let tbarc = ctx.tab_manager().clone();
+                let tbg = tbarc.read().unwrap();
+                let tab_manager = & *tbg;
                 let next_tab = tab_manager.next_tab_idx().unwrap();
                 // println!("next tab is {}", next_tab);
                 tab_manager.select_tab(next_tab);
@@ -596,13 +596,13 @@ impl<'a, T: EventListener, A: ActionContext<T>> Processor<'a, T, A> {
             && terminal.mode().intersects(TermMode::MOUSE_MOTION | TermMode::MOUSE_DRAG)
         {
             if lmb_pressed {
-                self.mouse_report(32, ElementState::Pressed, terminal);
+                self.mouse_report_wt(32, ElementState::Pressed, terminal);
             } else if self.ctx.mouse().middle_button_state == ElementState::Pressed {
-                self.mouse_report(33, ElementState::Pressed, terminal);
+                self.mouse_report_wt(33, ElementState::Pressed, terminal);
             } else if self.ctx.mouse().right_button_state == ElementState::Pressed {
-                self.mouse_report(34, ElementState::Pressed, terminal);
+                self.mouse_report_wt(34, ElementState::Pressed, terminal);
             } else if terminal.mode().contains(TermMode::MOUSE_MOTION) {
-                self.mouse_report(35, ElementState::Pressed, terminal);
+                self.mouse_report_wt(35, ElementState::Pressed, terminal);
             }
         }
 
@@ -632,11 +632,11 @@ impl<'a, T: EventListener, A: ActionContext<T>> Processor<'a, T, A> {
     }
 
     fn normal_mouse_report(&mut self, button: u8) {
-        tm_cl!(self.ctx.tab_manager(), terminal, {
-
         
         let (line, column) = (self.ctx.mouse().line, self.ctx.mouse().column);
-        let utf8 = terminal.mode().contains(TermMode::UTF8_MOUSE);
+        tm_cl!(self.ctx.tab_manager(), terminal, {
+            let utf8 = terminal.mode().contains(TermMode::UTF8_MOUSE);
+        });
 
         let max_point = if utf8 { 2015 } else { 223 };
 
@@ -664,9 +664,8 @@ impl<'a, T: EventListener, A: ActionContext<T>> Processor<'a, T, A> {
         } else {
             msg.push(32 + 1 + line.0 as u8);
         }
-
-        self.ctx.write_to_pty(msg);
-        });
+        
+        self.ctx.write_to_pty(msg);;
     }
 
     fn sgr_mouse_report(&mut self, button: u8, state: ElementState) {
@@ -680,10 +679,36 @@ impl<'a, T: EventListener, A: ActionContext<T>> Processor<'a, T, A> {
         self.ctx.write_to_pty(msg.into_bytes());
     }
 
-    fn mouse_report(&mut self, button: u8, state: ElementState, terminal: &mut Term<EventProxy>) {
+    fn mouse_report(&mut self, button: u8, state: ElementState) {
         // Calculate modifiers value.
+        let mut mods = 0;
+        let modifiers = self.ctx.modifiers();
+        if modifiers.shift() {
+            mods += 4;
+        }
+        if modifiers.alt() {
+            mods += 8;
+        }
+        if modifiers.ctrl() {
+            mods += 16;
+        }
 
+        tm_cl!(self.ctx.tab_manager(), terminal, {
+            let sgr_mouse = terminal.mode().contains(TermMode::SGR_MOUSE);
+        });
 
+        // Report mouse events.
+        if sgr_mouse {
+            self.sgr_mouse_report(button + mods, state);
+        } else if let ElementState::Released = state {
+            self.normal_mouse_report(3 + mods);
+        } else {
+            self.normal_mouse_report(button + mods);
+        }
+    }
+
+    fn mouse_report_wt(&mut self, button: u8, state: ElementState, terminal: &mut Term<EventProxy>) {
+        // Calculate modifiers value.
         let mut mods = 0;
         let modifiers = self.ctx.modifiers();
         if modifiers.shift() {
@@ -723,9 +748,9 @@ impl<'a, T: EventListener, A: ActionContext<T>> Processor<'a, T, A> {
                 MouseButton::Other(_) => return,
             };
 
-            tm_cl!(self.ctx.tab_manager(), terminal, {
-            self.mouse_report(code, ElementState::Pressed, &mut terminal);
-            });
+            
+            self.mouse_report(code, ElementState::Pressed);
+            
         } else {
             // Calculate time since the last click to handle double/triple clicks.
             let now = Instant::now();
@@ -859,9 +884,9 @@ impl<'a, T: EventListener, A: ActionContext<T>> Processor<'a, T, A> {
                 // Can't properly report more than three buttons.
                 MouseButton::Other(_) => return,
             };
-            tm_cl!(self.ctx.tab_manager(), terminal, {
-                self.mouse_report(code, ElementState::Released, &mut terminal);
-            });
+            
+            self.mouse_report(code, ElementState::Released);
+            
             return;
         } else if let (MouseButton::Left, MouseState::Url(url)) = (button, self.mouse_state()) {
             tm_cl!(self.ctx.tab_manager(), terminal, {
@@ -913,11 +938,11 @@ impl<'a, T: EventListener, A: ActionContext<T>> Processor<'a, T, A> {
             let code = if new_scroll_px > 0. { 64 } else { 65 };
             let lines = (self.ctx.mouse().scroll_px / height).abs() as i32;
 
-            tm_cl!(self.ctx.tab_manager(), terminal, {
+            
             for _ in 0..lines {
-                self.mouse_report(code, ElementState::Pressed, &mut terminal);
+                self.mouse_report(code, ElementState::Pressed);
             }
-            });
+            
         } else if term_mode.contains(TermMode::ALT_SCREEN | TermMode::ALTERNATE_SCROLL)
             && !self.ctx.modifiers().shift()
         {
@@ -943,9 +968,7 @@ impl<'a, T: EventListener, A: ActionContext<T>> Processor<'a, T, A> {
             // Store absolute position of vi mode cursor.
 
             tm_cl!(self.ctx.tab_manager(), terminal, {
-
-            let absolute = terminal.visible_to_buffer(terminal.vi_mode_cursor.point);
-
+                let absolute = terminal.visible_to_buffer(terminal.vi_mode_cursor.point);
             });
 
             self.ctx.scroll(Scroll::Delta(lines as isize));
@@ -953,16 +976,15 @@ impl<'a, T: EventListener, A: ActionContext<T>> Processor<'a, T, A> {
             // Try to restore vi mode cursor position, to keep it above its previous content.
 
             tm_cl!(self.ctx.tab_manager(), terminal, {
+                terminal.vi_mode_cursor.point = terminal.grid().clamp_buffer_to_visible(absolute);
+                terminal.vi_mode_cursor.point.col = absolute.col;
 
-            terminal.vi_mode_cursor.point = terminal.grid().clamp_buffer_to_visible(absolute);
-            terminal.vi_mode_cursor.point.col = absolute.col;
-
-            // Update selection.
-            if term_mode.contains(TermMode::VI) {
-                if selection_not_empty {
-                    self.ctx.update_selection_wt(terminal.vi_mode_cursor.point, Side::Right, &mut terminal);
+                // Update selection.
+                if term_mode.contains(TermMode::VI) {
+                    if selection_not_empty {
+                        self.ctx.update_selection_wt(terminal.vi_mode_cursor.point, Side::Right, &mut terminal);
+                    }
                 }
-            }
             });
         }
 
@@ -972,14 +994,14 @@ impl<'a, T: EventListener, A: ActionContext<T>> Processor<'a, T, A> {
 
     pub fn on_focus_change(&mut self, is_focused: bool) {
         tm_cl!(self.ctx.tab_manager(), terminal, {
-
-        if terminal.mode().contains(TermMode::FOCUS_IN_OUT) {
+            let is_focus = terminal.mode().contains(TermMode::FOCUS_IN_OUT);
+        });
+        if is_focus {
             let chr = if is_focused { "I" } else { "O" };
 
             let msg = format!("\x1b[{}", chr);
             self.ctx.write_to_pty(msg.into_bytes());
         }
-        });
     }
 
     pub fn mouse_input(&mut self, state: ElementState, button: MouseButton) {
@@ -995,9 +1017,9 @@ impl<'a, T: EventListener, A: ActionContext<T>> Processor<'a, T, A> {
             match self.ctx.find_tab(self.ctx.mouse().column) {
                 Some(tab_idx) => {
                     let tm = self.ctx.tab_manager().clone();
-                    let mut tmguard = tm.lock();
-                    let mut tab_manager = &mut *tmguard;
-                        tab_manager.select_tab(tab_idx);
+                    let tmguard = tm.read().unwrap();
+                    let tab_manager = & *tmguard;
+                    tab_manager.select_tab(tab_idx);
                     drop(tmguard);
                 },
                 None => {
@@ -1354,7 +1376,7 @@ mod tests {
     }
 
     struct ActionContext<'a, T> {
-        pub tab_mananger: Arc<FairMutex<TabManager>>,
+        pub tab_mananger: Arc<RwLock<TabManager>>,
         // pub terminal: &'a mut Term<T>,
         pub selection: &'a mut Option<Selection>,
         pub size_info: &'a SizeInfo,
@@ -1448,7 +1470,7 @@ mod tests {
         fn launch_url_wt(&self, url: Url, terminal: &mut Term<EventProxy>) {
 
         }
-        fn tab_manager(&self) -> Arc<FairMutex<TabManager>> {
+        fn tab_manager(&self) -> Arc<RwLock<TabManager>> {
             return self.tab_manager.clone();
         }
 

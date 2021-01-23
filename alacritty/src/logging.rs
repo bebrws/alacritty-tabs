@@ -10,7 +10,7 @@ use std::io::{self, LineWriter, Stdout, Write};
 use std::path::PathBuf;
 use std::process;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 use glutin::event_loop::EventLoopProxy;
 use log::{self, Level};

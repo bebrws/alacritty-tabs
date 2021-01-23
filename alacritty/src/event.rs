@@ -15,7 +15,7 @@ use std::ops::RangeInclusive;
 use std::path::PathBuf;
 #[cfg(not(any(target_os = "macos", windows)))]
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 use log::{debug, trace, error, info};
@@ -184,7 +184,7 @@ impl Default for SearchState {
 }
 
 pub struct ActionContext<'a> {
-    pub tab_manager: Arc<FairMutex<TabManager>>,
+    pub tab_manager: Arc<RwLock<TabManager>>,
     // pub terminal: &'a mut Term<EventProxy>,
     pub clipboard: &'a mut Clipboard,
     pub size_info: &'a mut SizeInfo,
@@ -223,13 +223,13 @@ impl<'a> input::ActionContext<EventProxy> for ActionContext<'a> {
         }
     }
 
-    fn tab_manager(&self) -> Arc<FairMutex<TabManager>> {
+    fn tab_manager(&self) -> Arc<RwLock<TabManager>> {
         return self.tab_manager.clone();
     }
 
     fn write_to_pty<B: Into<Cow<'static, [u8]>>>(&mut self, val: B) {
-        let mut tab_manager_guard = self.tab_manager.lock();
-        let mut tab_manager: &mut TabManager = &mut *tab_manager_guard;
+        let tab_manager_guard = self.tab_manager.read().unwrap();
+        let tab_manager: & TabManager = & *tab_manager_guard;
         let c: Cow<[u8]> = val.into();
         let vc: Vec<u8> = c.into_iter().map(|c| *c).collect();
         tab_manager.receive_stdin(&vc);
@@ -417,10 +417,10 @@ impl<'a> input::ActionContext<EventProxy> for ActionContext<'a> {
         let c = col.0;
 
         let tm = self.tab_manager.clone();
-        let mut tmguard = tm.lock();
-        let mut tab_manager = &mut *tmguard;
+        let tmguard = tm.read().unwrap();
+        let tab_manager = & *tmguard;
 
-        let tab_len = tab_manager.tabs.len();
+        let tab_len = tab_manager.num_tabs();
         // One tab takes up 6 spaces
         if c < (tab_len * 6) {
             if c % 6 != 0 {
@@ -1063,9 +1063,9 @@ impl<'a> ActionContext<'a> {
 
     /// Update the cursor blinking state.
     fn update_cursor_blinking(&mut self) {
-        let mut tab_manager_guard = self.tab_manager.lock();
+        let mut tab_manager_guard = self.tab_manager.write().unwrap();
         let mut tab_manager = &mut *tab_manager_guard;
-        let mut tab = tab_manager.selected_tab().unwrap();
+        let mut tab = &*tab_manager.selected_tab_arc();
         let mut terminal_guard = tab.terminal.lock();
         let mut terminal = &mut *terminal_guard;
 
@@ -1154,7 +1154,7 @@ impl Default for Mouse {
 /// Stores some state from received events and dispatches actions when they are
 /// triggered.
 pub struct Processor {
-    tab_manager: Arc<FairMutex<TabManager>>,
+    tab_manager: Arc<RwLock<TabManager>>,
     mouse: Mouse,
     received_count: usize,
     suppress_chars: bool,
@@ -1174,7 +1174,7 @@ impl Processor {
     ///
     /// Takes a writer which is expected to be hooked up to the write end of a PTY.
     pub fn new(
-        tab_manager: Arc<FairMutex<TabManager>>,
+        tab_manager: Arc<RwLock<TabManager>>,
         message_buffer: MessageBuffer,
         config: Config,
         display: Display,
@@ -1429,9 +1429,9 @@ impl Processor {
             }
 
             let tm = tab_manager_mutex_clone.clone();
-            let mut tab_manager_guard = tm.lock();
-            let tab_manager: &mut TabManager = &mut *tab_manager_guard;
-            let tab = tab_manager.selected_tab().unwrap();
+            let mut tab_manager_guard = tm.read().unwrap();
+            let tab_manager: &TabManager = & *tab_manager_guard;
+            let tab = &*tab_manager.selected_tab_arc();
             let terminal_mutex = tab.terminal.clone();
             let mut terminal_guard = terminal_mutex.lock();
             let mut terminal = &mut *terminal_guard;
@@ -1467,9 +1467,9 @@ impl Processor {
                 }
 
                 let tm = tab_manager_mutex_clone.clone();
-                let mut tab_manager_guard = tm.lock();
-                let tab_manager: &mut TabManager = &mut *tab_manager_guard;
-                let tab = tab_manager.selected_tab().unwrap();
+                let mut tab_manager_guard = tm.read().unwrap();
+                let tab_manager: &TabManager = & *tab_manager_guard;
+                let tab = &*tab_manager.selected_tab_arc();
                 let terminal_mutex = tab.terminal.clone();
                 let mut terminal_guard = terminal_mutex.lock();
                 let mut terminal = &mut *terminal_guard;
@@ -1507,7 +1507,7 @@ impl Processor {
         event: GlutinEvent<'_, Event>,
         processor: &mut input::Processor<'_, EventProxy, ActionContext<'_>>,
         // terminal: &mut Term<EventProxy>
-        tab_manager_mutex: Arc<FairMutex<TabManager>>,
+        tab_manager_mutex: Arc<RwLock<TabManager>>,
     ) {
         match event {
             GlutinEvent::UserEvent(event) => match event {
@@ -1569,15 +1569,15 @@ impl Processor {
                     },
                     TerminalEvent::Close(idx) => {
                         let tm = tab_manager_mutex.clone();
-                        let mut tab_manager_guard = tm.lock();
-                        let tab_manager: &mut TabManager = &mut *tab_manager_guard;
+                        let mut tab_manager_guard = tm.read().unwrap();
+                        let tab_manager: &TabManager = & *tab_manager_guard;
 
                         // Note: no longer attempting to tie the tab_idx to the tab being closed
                         tab_manager.remove_selected_tab();
 
-                        let tab = tab_manager.selected_tab().unwrap();
-                        let terminal_mutex = tab.terminal.clone();
-                        let mut terminal_guard = terminal_mutex.lock();
+                        
+                        let mut tab = &*tab_manager.selected_tab_arc();
+                        let mut terminal_guard = tab.terminal.lock();
                         let mut terminal = &mut *terminal_guard;
                         terminal.dirty = true;
                         drop(terminal_guard);
@@ -1817,9 +1817,9 @@ impl Processor {
     ) {
         // Compute cursor positions before resize.
         let tm = self.tab_manager.clone();
-        let mut tab_manager_guard = tm.lock();
-        let tab_manager: &mut TabManager = &mut *tab_manager_guard;
-        let tab = tab_manager.selected_tab().unwrap();
+        let mut tab_manager_guard = tm.read().unwrap();
+        let tab_manager: &TabManager = & *tab_manager_guard;
+        let tab = &*tab_manager.selected_tab_arc();
         let terminal_mutex = tab.terminal.clone();
         let mut terminal_guard = terminal_mutex.lock();
         let mut terminal = &mut *terminal_guard;
@@ -1843,9 +1843,9 @@ impl Processor {
         );
 
         let tm = self.tab_manager.clone();
-        let mut tab_manager_guard = tm.lock();
-        let tab_manager: &mut TabManager = &mut *tab_manager_guard;
-        let tab = tab_manager.selected_tab().unwrap();
+        let mut tab_manager_guard = tm.read().unwrap();
+        let tab_manager: &TabManager = & *tab_manager_guard;
+        let tab = &*tab_manager.selected_tab_arc();
         let terminal_mutex = tab.terminal.clone();
         let mut terminal_guard = terminal_mutex.lock();
         let mut terminal = &mut *terminal_guard;

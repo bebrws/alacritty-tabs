@@ -11,7 +11,7 @@ use std::os::unix::io::AsRawFd;
 
 
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use alacritty_terminal::term::SizeInfo;
 
 use std::io;
