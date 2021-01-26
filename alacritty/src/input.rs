@@ -595,27 +595,35 @@ impl<'a, T: EventListener, A: ActionContext<T>> Processor<'a, T, A> {
 
         // Don't launch URLs if mouse has moved.
         self.ctx.mouse_mut().block_url_launcher = true;
-    tm_cl!(self.ctx.tab_manager(), terminal, {
+
+        tm_cl!(self.ctx.tab_manager(), terminal, {
+            let screen_lines = terminal.screen_lines();
+            let terminal_mode = terminal.mode().intersects(TermMode::MOUSE_MOTION | TermMode::MOUSE_DRAG);
+            let not_mouse_mode = !self.ctx.mouse_mode_wt(terminal);
+            let mouse_motion = terminal.mode().contains(TermMode::MOUSE_MOTION);
+        });
         
-        if (lmb_pressed || rmb_pressed) && (self.ctx.modifiers().shift() || !self.ctx.mouse_mode_wt(terminal))
+        if (lmb_pressed || rmb_pressed) && (self.ctx.modifiers().shift() || not_mouse_mode)
         {
-            self.ctx.update_selection_wt(point, cell_side, terminal);
+            tm_cl!(self.ctx.tab_manager(), terminal, {
+                self.ctx.update_selection_wt(point, cell_side, terminal);
+            });
         } else if cell_changed
-            && point.line < terminal.screen_lines()
-            && terminal.mode().intersects(TermMode::MOUSE_MOTION | TermMode::MOUSE_DRAG)
+            && point.line < screen_lines
+            && terminal_mode
         {
             if lmb_pressed {
-                self.mouse_report_wt(32, ElementState::Pressed, terminal);
+                self.mouse_report(32, ElementState::Pressed);
             } else if self.ctx.mouse().middle_button_state == ElementState::Pressed {
-                self.mouse_report_wt(33, ElementState::Pressed, terminal);
+                self.mouse_report(33, ElementState::Pressed);
             } else if self.ctx.mouse().right_button_state == ElementState::Pressed {
-                self.mouse_report_wt(34, ElementState::Pressed, terminal);
-            } else if terminal.mode().contains(TermMode::MOUSE_MOTION) {
-                self.mouse_report_wt(35, ElementState::Pressed, terminal);
+                self.mouse_report(34, ElementState::Pressed);
+            } else if mouse_motion {
+                self.mouse_report(35, ElementState::Pressed);
             }
         }
 
-        });
+        
     }
 
     fn get_mouse_side(&self) -> Side {
@@ -715,31 +723,6 @@ impl<'a, T: EventListener, A: ActionContext<T>> Processor<'a, T, A> {
             self.normal_mouse_report(button + mods);
         }
     }
-
-    fn mouse_report_wt(&mut self, button: u8, state: ElementState, terminal: &mut Term<EventProxy>) {
-        // Calculate modifiers value.
-        let mut mods = 0;
-        let modifiers = self.ctx.modifiers();
-        if modifiers.shift() {
-            mods += 4;
-        }
-        if modifiers.alt() {
-            mods += 8;
-        }
-        if modifiers.ctrl() {
-            mods += 16;
-        }
-
-        // Report mouse events.
-        if terminal.mode().contains(TermMode::SGR_MOUSE) {
-            self.sgr_mouse_report(button + mods, state);
-        } else if let ElementState::Released = state {
-            self.normal_mouse_report(3 + mods);
-        } else {
-            self.normal_mouse_report(button + mods);
-        }
-    }
-
     fn on_mouse_press(&mut self, button: MouseButton) {
         // Handle mouse mode.
         tm_cl!(self.ctx.tab_manager(), terminal, {
