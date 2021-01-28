@@ -25,22 +25,24 @@ use glutin::window::CursorIcon;
 
 use crate::event::EventProxy;
 
+
 use alacritty_terminal::ansi::{ClearMode, Handler};
 use alacritty_terminal::event::EventListener;
 use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::index::{Boundary, Column, Direction, Line, Point, Side};
 use alacritty_terminal::selection::SelectionType;
+use alacritty_terminal::term::search::Match;
 use alacritty_terminal::term::{ClipboardType, SizeInfo, Term, TermMode};
 use alacritty_terminal::vi_mode::ViMotion;
 
 use crate::clipboard::Clipboard;
 use crate::config::{Action, Binding, BindingMode, Config, Key, SearchAction, ViAction};
 use crate::daemon::start_daemon;
+use crate::display::window::Window;
 use crate::event::{ClickState, Event, Mouse, TYPING_SEARCH_DELAY};
 use crate::message_bar::{self, Message};
 use crate::scheduler::{Scheduler, TimerId};
 use crate::url::{Url, Urls};
-use crate::window::Window;
 
 #[macro_use]
 use crate::macros;
@@ -61,76 +63,67 @@ const SELECTION_SCROLLING_STEP: f64 = 20.;
 ///
 /// An escape sequence may be emitted in case specific keys or key combinations
 /// are activated.
-pub struct Processor<'a, T: EventListener, A: ActionContext<T>> {
+pub struct Processor<T: EventListener, A: ActionContext<T>> {
     pub ctx: A,
-    pub highlighted_url: &'a Option<Url>,
     _phantom: PhantomData<T>,
 }
 
 pub trait ActionContext<T: EventListener> {
-    fn tab_manager(&self) -> Arc<RwLock<TabManager>>;
-    fn write_to_pty<B: Into<Cow<'static, [u8]>>>(&mut self, data: B);
-    fn size_info(&self) -> SizeInfo;
-    fn copy_selection(&mut self, ty: ClipboardType);
 
-    fn find_tab(&self, col: Column) -> Option<usize>;
-    fn find_word(&mut self, point: Point, side: Side) -> String;
-    fn start_selection_wt(&mut self, ty: SelectionType, point: Point, side: Side, terminal: &mut Term<EventProxy>);
-    fn start_selection(&mut self, ty: SelectionType, point: Point, side: Side);
-    fn toggle_selection_wt(&mut self, ty: SelectionType, point: Point, side: Side, terminal: &mut Term<EventProxy>);
-    fn toggle_selection(&mut self, ty: SelectionType, point: Point, side: Side);
-    fn update_selection(&mut self, point: Point, side: Side);
-    fn update_selection_wt(&mut self, point: Point, side: Side, terminal: &mut Term<EventProxy>);
-    fn clear_selection(&mut self);
-    fn clear_selection_wt(&mut self, terminal: &mut Term<EventProxy>);
+    fn tab_manager(&mut self) -> Arc<TabManager>;
+    fn find_word<U: EventListener>(&self, point_p: Point, side: Side, terminal: &Term<U>) -> String;
+    fn write_to_pty<B: Into<Cow<'static, [u8]>>>(&mut self, _data: B);
+    fn mark_dirty(&mut self) {}
+    fn size_info(&self) -> SizeInfo;
+    fn copy_selection(&mut self, _ty: ClipboardType) {}
+    fn start_selection(&mut self, _ty: SelectionType, _point: Point, _side: Side) {}
+    fn toggle_selection(&mut self, _ty: SelectionType, _point: Point, _side: Side) {}
+    fn update_selection(&mut self, _point: Point, _side: Side) {}
+    fn clear_selection(&mut self) {}
     fn selection_is_empty(&self) -> bool;
-    fn selection_is_empty_wt(&self, terminal: &mut Term<EventProxy>) -> bool;
     fn mouse_mut(&mut self) -> &mut Mouse;
     fn mouse(&self) -> &Mouse;
     fn mouse_coords(&self) -> Option<Point>;
     fn received_count(&mut self) -> &mut usize;
     fn suppress_chars(&mut self) -> &mut bool;
     fn modifiers(&mut self) -> &mut ModifiersState;
-    fn scroll(&mut self, scroll: Scroll);
+    fn scroll(&mut self, _scroll: Scroll) {}
     fn window(&self) -> &Window;
     fn window_mut(&mut self) -> &mut Window;
-    // fn terminal(&self) -> &Term<T>;
-    // fn terminal_mut(&mut self) -> &mut Term<T>;
-    fn spawn_new_instance(&mut self);
-    fn change_font_size(&mut self, delta: f32);
-    fn reset_font_size(&mut self);
-    fn pop_message(&mut self);
+    fn terminal(&self) -> &Term<T>;
+
+    fn terminal_mut(&mut self) -> &mut Term<EventProxy>;
+    fn spawn_new_instance(&mut self) {}
+    fn change_font_size(&mut self, _delta: f32) {}
+    fn reset_font_size(&mut self) {}
+    fn pop_message(&mut self) {}
     fn message(&self) -> Option<&Message>;
     fn config(&self) -> &Config;
     fn event_loop(&self) -> &EventLoopWindowTarget<Event>;
     fn urls(&self) -> &Urls;
-    fn launch_url(&self, url: Url);
-    fn launch_url_wt(&self, url: Url, terminal: &mut Term<EventProxy>);
-    fn mouse_mode_wt(&self, terminal: &mut Term<EventProxy>) -> bool;
-
+    fn launch_url(&self, _url: Url) {}
+    fn highlighted_url(&self) -> Option<&Url>;
     fn mouse_mode(&self) -> bool;
     fn clipboard_mut(&mut self) -> &mut Clipboard;
     fn scheduler_mut(&mut self) -> &mut Scheduler;
-    fn start_search(&mut self, direction: Direction);
-
-    fn start_search_wt(&mut self, direction: Direction, terminal: &mut Term<EventProxy>);
-    fn confirm_search(&mut self);
-
-    fn confirm_search_wt(&mut self, terminal: &mut Term<EventProxy>);
-    fn cancel_search(&mut self);
-    fn search_input(&mut self, c: char);
-    fn search_input_wt(&mut self, c: char, terminal: &mut Term<EventProxy>);
-    fn search_pop_word(&mut self);
-    fn search_history_previous(&mut self);
-    fn search_history_next(&mut self);
-    fn toggle_grep_mode(&mut self);
-
-
-    fn set_grep_mode_to(&mut self, to_val: bool);
-    fn advance_search_origin(&mut self, direction: Direction);
+    fn start_search(&mut self, _direction: Direction) {}
+    fn confirm_search(&mut self) {}
+    fn cancel_search(&mut self) {}
+    fn search_input(&mut self, _c: char) {}
+    fn search_pop_word(&mut self) {}
+    fn search_history_previous(&mut self) {}
+    fn search_history_next(&mut self) {}
+    fn search_next(
+        &mut self,
+        origin: Point<usize>,
+        direction: Direction,
+        side: Side,
+    ) -> Option<Match>;
+    fn advance_search_origin(&mut self, _direction: Direction) {}
     fn search_direction(&self) -> Direction;
     fn search_active(&self) -> bool;
-    fn on_typing_start(&mut self);
+    fn on_typing_start(&mut self) {}
+    fn toggle_vi_mode(&mut self) {}
 }
 
 trait Execute<T: EventListener> {
@@ -145,25 +138,21 @@ impl<T, U: EventListener> Execute<U> for Binding<T> {
     }
 }
 
+
 impl Action {
     fn toggle_selection<T, A>(ctx: &mut A, ty: SelectionType)
     where
-        T: EventListener,
         A: ActionContext<T>,
+        T: EventListener,
     {
-        tm_cl!(ctx.tab_manager(), terminal, {
-
-        let cursor_point = terminal.vi_mode_cursor.point;
-        ctx.toggle_selection_wt(ty, cursor_point, Side::Left, &mut terminal);
+        let cursor_point = ctx.terminal().vi_mode_cursor.point;
+        ctx.toggle_selection(ty, cursor_point, Side::Left);
 
         // Make sure initial selection is not empty.
-        if let Some(selection) = &mut terminal.selection {
+        if let Some(selection) = &mut ctx.terminal_mut().selection {
             selection.include_all();
         }
-
-        });
     }
-    
 }
 
 impl<T: EventListener> Execute<T> for Action {
@@ -171,52 +160,27 @@ impl<T: EventListener> Execute<T> for Action {
     fn execute<A: ActionContext<T>>(&self, ctx: &mut A) {
         match *self {
             Action::NewTab => {
-                let tbarc = ctx.tab_manager().clone();
-                let tbg = tbarc.read().unwrap();
-                let tab_manager = & *tbg;
+                let tab_manager = ctx.tab_manager();
                 let idx = tab_manager.new_tab().unwrap();
                 tab_manager.select_tab(idx);
                 // println!("New tab is {}", idx);
-
-                let mut tab = &*tab_manager.selected_tab_arc();
-                let mut terminal_guard = tab.terminal.lock();
-                let mut terminal = &mut *terminal_guard;
-            
-                terminal.dirty = true;
-                drop(terminal_guard);
-                drop(tbg);
+                // terminal.dirty = true;
+                ctx.mark_dirty();
             },
             Action::PreviousTab => {
-                let tbarc = ctx.tab_manager().clone();
-                let tbg = tbarc.read().unwrap();
-                let tab_manager = & *tbg;
+                let tab_manager = ctx.tab_manager();
                 let prev_tab = tab_manager.prev_tab_idx().unwrap();
                 // println!("prev tab is {}", prev_tab);
                 tab_manager.select_tab(prev_tab);
-                let mut tab = &*tab_manager.selected_tab_arc();
-                let mut terminal_guard = tab.terminal.lock();
-                let mut terminal = &mut *terminal_guard;
-                terminal.dirty = true;
-                drop(terminal_guard);
-                drop(tbg);
+                ctx.mark_dirty();
             },            
             Action::NextTab => {
-                let tbarc = ctx.tab_manager().clone();
-                let tbg = tbarc.read().unwrap();
-                let tab_manager = & *tbg;
+                let tab_manager = ctx.tab_manager();
                 let next_tab = tab_manager.next_tab_idx().unwrap();
                 // println!("next tab is {}", next_tab);
                 tab_manager.select_tab(next_tab);
 
-                let mut tab = &*tab_manager.selected_tab_arc();
-                let mut terminal_guard = tab.terminal.lock();
-                let mut terminal = &mut *terminal_guard;
-            
-                terminal.dirty = true;
-
-                drop(terminal_guard);
-                
-                drop(tbg);
+                ctx.mark_dirty();
             },
             Action::Esc(ref s) => {
                 // println!("Escape seq being written: {}", s);
@@ -224,12 +188,9 @@ impl<T: EventListener> Execute<T> for Action {
 
                 ctx.clear_selection();
                 ctx.scroll(Scroll::Bottom);
-
-                tm_cl!(ctx.tab_manager(), terminal, {
-
-                terminal.dirty = true;
                 
-                });
+                // TODO: Check if needed
+                // ctx.dirty = true;
                 
                 ctx.write_to_pty(s.clone().into_bytes())
             },
@@ -240,16 +201,11 @@ impl<T: EventListener> Execute<T> for Action {
 
                 start_daemon(program, args);
             },
-            Action::ToggleViMode => {
-                tm_cl!(ctx.tab_manager(), terminal, {
-                    terminal.toggle_vi_mode();
-                });
-            },
+            Action::ToggleViMode => ctx.toggle_vi_mode(),
             Action::ViMotion(motion) => {
                 ctx.on_typing_start();
-                tm_cl!(ctx.tab_manager(), terminal, {
-                terminal.vi_motion(motion);
-                });
+                ctx.terminal_mut().vi_motion(motion);
+                ctx.mark_dirty();
             },
             Action::ViAction(ViAction::ToggleNormalSelection) => {
                 Self::toggle_selection(ctx, SelectionType::Simple)
@@ -264,76 +220,74 @@ impl<T: EventListener> Execute<T> for Action {
                 Self::toggle_selection(ctx, SelectionType::Semantic)
             },
             Action::ViAction(ViAction::Open) => {
-                tm_cl!(ctx.tab_manager(), terminal, {
-
                 ctx.mouse_mut().block_url_launcher = false;
-                if let Some(url) = ctx.urls().find_at(terminal.vi_mode_cursor.point) {
-                    ctx.launch_url_wt(url, &mut terminal);
+                if let Some(url) = ctx.urls().find_at(ctx.terminal().vi_mode_cursor.point) {
+                    ctx.launch_url(url);
                 }
-
-                });
             },
             Action::ViAction(ViAction::SearchNext) => {
-                tm_cl!(ctx.tab_manager(), terminal, {
+                
 
+                let terminal = ctx.terminal();
                 let direction = ctx.search_direction();
-                let vi_point = terminal.visible_to_buffer(terminal.vi_mode_cursor.point);
+                let vi_point = terminal.visible_to_buffer(ctx.terminal().vi_mode_cursor.point);
                 let origin = match direction {
-                    Direction::Right => vi_point.add_absolute(terminal, Boundary::Wrap, 1),
-                    Direction::Left => vi_point.sub_absolute(terminal, Boundary::Wrap, 1),
+                    Direction::Right => vi_point.add_absolute(ctx.terminal(), Boundary::Wrap, 1),
+                    Direction::Left => vi_point.sub_absolute(ctx.terminal(), Boundary::Wrap, 1),
                 };
 
-                let regex_match = terminal.search_next(origin, direction, Side::Left, None);
-                if let Some(regex_match) = regex_match {
-                    terminal.vi_goto_point(*regex_match.start());
+                if let Some(regex_match) = ctx.search_next(origin, direction, Side::Left) {
+                    ctx.terminal_mut().vi_goto_point(*regex_match.start());
+                    ctx.mark_dirty();
                 }
-                });
+            
             },
             Action::ViAction(ViAction::SearchPrevious) => {
-                tm_cl!(ctx.tab_manager(), terminal, {
+                
 
                 let direction = ctx.search_direction().opposite();
-                let vi_point = terminal.visible_to_buffer(terminal.vi_mode_cursor.point);
+                let vi_point = ctx.terminal().visible_to_buffer(ctx.terminal().vi_mode_cursor.point);
                 let origin = match direction {
-                    Direction::Right => vi_point.add_absolute(terminal, Boundary::Wrap, 1),
-                    Direction::Left => vi_point.sub_absolute(terminal, Boundary::Wrap, 1),
+                    Direction::Right => vi_point.add_absolute(ctx.terminal(), Boundary::Wrap, 1),
+                    Direction::Left => vi_point.sub_absolute(ctx.terminal(), Boundary::Wrap, 1),
                 };
 
-                let regex_match = terminal.search_next(origin, direction, Side::Left, None);
-                if let Some(regex_match) = regex_match {
-                    terminal.vi_goto_point(*regex_match.start());
+                if let Some(regex_match) = ctx.search_next(origin, direction, Side::Left) {
+                    ctx.terminal_mut().vi_goto_point(*regex_match.start());
+                    ctx.mark_dirty();
                 }
-                });
+                
             },
             Action::ViAction(ViAction::SearchStart) => {
-                tm_cl!(ctx.tab_manager(), terminal, {
+
                 
-                let origin = terminal
-                    .visible_to_buffer(terminal.vi_mode_cursor.point)
-                    .sub_absolute(terminal, Boundary::Wrap, 1);
-                let regex_match = terminal.search_next(origin, Direction::Left, Side::Left, None);
-                if let Some(regex_match) = regex_match {
-                    terminal.vi_goto_point(*regex_match.start());
+                let origin = ctx.terminal()
+                    .visible_to_buffer(ctx.terminal().vi_mode_cursor.point)
+                    .sub_absolute(ctx.terminal(), Boundary::Wrap, 1);
+
+                if let Some(regex_match) = ctx.search_next(origin, Direction::Left, Side::Left) {
+                    ctx.terminal_mut().vi_goto_point(*regex_match.start());
+                    ctx.mark_dirty();
                 }
-                });
+                
             },
             Action::ViAction(ViAction::SearchEnd) => {
-                tm_cl!(ctx.tab_manager(), terminal, {
-                    
-                    let origin = terminal
-                        .visible_to_buffer(terminal.vi_mode_cursor.point)
-                        .add_absolute(terminal, Boundary::Wrap, 1);
-                let regex_match = terminal.search_next(origin, Direction::Right, Side::Right, None);
-                if let Some(regex_match) = regex_match {
-                    terminal.vi_goto_point(*regex_match.end());
+                let terminal = ctx.terminal();
+                let origin = ctx.terminal()
+                    .visible_to_buffer(ctx.terminal().vi_mode_cursor.point)
+                    .add_absolute(ctx.terminal(), Boundary::Wrap, 1);
+
+                if let Some(regex_match) = ctx.search_next(origin, Direction::Right, Side::Right) {
+                    ctx.terminal_mut().vi_goto_point(*regex_match.end());
+                    ctx.mark_dirty();
                 }
-                });
+                
             },
             Action::SearchAction(SearchAction::SearchFocusNext) => {
                 ctx.advance_search_origin(ctx.search_direction());
             },
             Action::SearchAction(SearchAction::GrepMode) => {
-                ctx.toggle_grep_mode();
+                // ctx.toggle_grep_mode();
             },
             Action::SearchAction(SearchAction::SearchFocusPrevious) => {
                 let direction = ctx.search_direction().opposite();
@@ -374,110 +328,107 @@ impl<T: EventListener> Execute<T> for Action {
             Action::Hide => ctx.window().set_visible(false),
             Action::Minimize => ctx.window().set_minimized(true),
             Action::Quit => {
-                tm_cl!(ctx.tab_manager(), terminal, {
-
-                terminal.exit();
-                });
+                let tab_manager_clone = ctx.tab_manager();
+                (*tab_manager_clone).event_proxy.send_event(crate::event::Event::TerminalEvent(
+                    alacritty_terminal::event::Event::Exit
+                ));
+                
             },
             Action::IncreaseFontSize => ctx.change_font_size(FONT_SIZE_STEP),
             Action::DecreaseFontSize => ctx.change_font_size(FONT_SIZE_STEP * -1.),
             Action::ResetFontSize => ctx.reset_font_size(),
             Action::ScrollPageUp => {
                 // Move vi mode cursor.
-                tm_cl!(ctx.tab_manager(), terminal, {
+                
 
-                let scroll_lines = terminal.screen_lines().0 as isize;
-                terminal.vi_mode_cursor = terminal.vi_mode_cursor.scroll(terminal, scroll_lines);
+                let scroll_lines = ctx.terminal().screen_lines().0 as isize;
+                ctx.terminal_mut().vi_mode_cursor = ctx.terminal().vi_mode_cursor.scroll(ctx.terminal(), scroll_lines);
 
                 ctx.scroll(Scroll::PageUp);
-                });
+                
             },
             Action::ScrollPageDown => {
                 // Move vi mode cursor.
-                tm_cl!(ctx.tab_manager(), terminal, {
+                
 
-                let scroll_lines = -(terminal.screen_lines().0 as isize);
-                terminal.vi_mode_cursor = terminal.vi_mode_cursor.scroll(terminal, scroll_lines);
+                let scroll_lines = -(ctx.terminal().screen_lines().0 as isize);
+                ctx.terminal_mut().vi_mode_cursor = ctx.terminal().vi_mode_cursor.scroll(ctx.terminal(), scroll_lines);
 
                 ctx.scroll(Scroll::PageDown);
-                });
+                
             },
             Action::ScrollHalfPageUp => {
                 // Move vi mode cursor.
-                tm_cl!(ctx.tab_manager(), terminal, {
+                
 
-                let scroll_lines = terminal.screen_lines().0 as isize / 2;
-                terminal.vi_mode_cursor = terminal.vi_mode_cursor.scroll(terminal, scroll_lines);
+                let scroll_lines = ctx.terminal().screen_lines().0 as isize / 2;
+                ctx.terminal_mut().vi_mode_cursor = ctx.terminal().vi_mode_cursor.scroll(ctx.terminal(), scroll_lines);
 
                 ctx.scroll(Scroll::Delta(scroll_lines));
-                });
+                
             },
             Action::ScrollHalfPageDown => {
                 // Move vi mode cursor.
-                tm_cl!(ctx.tab_manager(), terminal, {
+                
 
-                let scroll_lines = -(terminal.screen_lines().0 as isize / 2);
-                terminal.vi_mode_cursor = terminal.vi_mode_cursor.scroll(terminal, scroll_lines);
+                let scroll_lines = -(ctx.terminal().screen_lines().0 as isize / 2);
+                ctx.terminal_mut().vi_mode_cursor = ctx.terminal().vi_mode_cursor.scroll(ctx.terminal(), scroll_lines);
 
                 ctx.scroll(Scroll::Delta(scroll_lines));
-                });
+                
             },
             Action::ScrollLineUp => {
                 // Move vi mode cursor.
-                tm_cl!(ctx.tab_manager(), terminal, {
+                
 
-                if terminal.grid().display_offset() != terminal.history_size()
-                    && terminal.vi_mode_cursor.point.line + 1 != terminal.screen_lines()
+                if ctx.terminal().grid().display_offset() != ctx.terminal().history_size()
+                    && ctx.terminal_mut().vi_mode_cursor.point.line + 1 != ctx.terminal().screen_lines()
                 {
-                    terminal.vi_mode_cursor.point.line += 1;
+                    ctx.terminal_mut().vi_mode_cursor.point.line += 1;
                 }
 
                 ctx.scroll(Scroll::Delta(1));
-                });
+                
             },
             Action::ScrollLineDown => {
                 // Move vi mode cursor.
-                tm_cl!(ctx.tab_manager(), terminal, {
+                
 
-                if terminal.grid().display_offset() != 0
-                    && terminal.vi_mode_cursor.point.line.0 != 0
+                if ctx.terminal().grid().display_offset() != 0
+                    && ctx.terminal().vi_mode_cursor.point.line.0 != 0
                 {
-                    terminal.vi_mode_cursor.point.line -= 1;
+                    ctx.terminal_mut().vi_mode_cursor.point.line -= 1;
                 }
 
                 ctx.scroll(Scroll::Delta(-1));
-                });
+                
             },
             Action::ScrollToTop => {
-                tm_cl!(ctx.tab_manager(), terminal, {
+                
 
                 ctx.scroll(Scroll::Top);
 
                 // Move vi mode cursor.
-                terminal.vi_mode_cursor.point.line = Line(0);
-                terminal.vi_motion(ViMotion::FirstOccupied);
-                });
+                ctx.terminal_mut().vi_mode_cursor.point.line = Line(0);
+                ctx.terminal_mut().vi_motion(ViMotion::FirstOccupied);
+                ctx.mark_dirty();
             },
             Action::ScrollToBottom => {
-                tm_cl!(ctx.tab_manager(), terminal, {
+                
 
                 ctx.scroll(Scroll::Bottom);
 
                 // Move vi mode cursor.
-
-                terminal.vi_mode_cursor.point.line = terminal.screen_lines() - 1;
+                let term = ctx.terminal_mut();
+                term.vi_mode_cursor.point.line = term.screen_lines() - 1;
 
                 // Move to beginning twice, to always jump across linewraps.
-                terminal.vi_motion(ViMotion::FirstOccupied);
-                terminal.vi_motion(ViMotion::FirstOccupied);
-                });
+                term.vi_motion(ViMotion::FirstOccupied);
+                term.vi_motion(ViMotion::FirstOccupied);
+                ctx.mark_dirty();
+                
             },
-            Action::ClearHistory => {
-                tm_cl!(ctx.tab_manager(), terminal, {
-
-                terminal.clear_screen(ClearMode::Saved);
-                });
-            },
+            Action::ClearHistory => ctx.terminal_mut().clear_screen(ClearMode::Saved),
             Action::ClearLogNotice => ctx.pop_message(),
             Action::SpawnNewInstance => ctx.spawn_new_instance(),
             Action::ReceiveChar | Action::None => (),
@@ -486,9 +437,9 @@ impl<T: EventListener> Execute<T> for Action {
 }
 
 fn paste<T: EventListener, A: ActionContext<T>>(ctx: &mut A, contents: &str) {
-    tm_cl!(ctx.tab_manager(), terminal, {
-    let is_brack_paste = terminal.mode().contains(TermMode::BRACKETED_PASTE);
-    });
+    
+    let is_brack_paste = ctx.terminal().mode().contains(TermMode::BRACKETED_PASTE);
+    
     
     if ctx.search_active() {
         for c in contents.chars() {
@@ -530,27 +481,22 @@ impl From<MouseState> for CursorIcon {
     }
 }
 
-impl<'a, T: EventListener, A: ActionContext<T>> Processor<'a, T, A> {
-    pub fn new(ctx: A, highlighted_url: &'a Option<Url>) -> Self {
-        Self { ctx, highlighted_url, _phantom: Default::default() }
+impl<T: EventListener, A: ActionContext<T>> Processor<T, A> {
+    pub fn new(ctx: A) -> Self {
+        Self { ctx, _phantom: Default::default() }
     }
 
     #[inline]
     pub fn mouse_moved(&mut self, position: PhysicalPosition<f64>) {
-        
-
         let size_info = self.ctx.size_info();
 
         let (x, y) = position.into();
 
         let lmb_pressed = self.ctx.mouse().left_button_state == ElementState::Pressed;
         let rmb_pressed = self.ctx.mouse().right_button_state == ElementState::Pressed;
-
-        tm_cl!(self.ctx.tab_manager(), terminal, {
-            if !self.ctx.selection_is_empty_wt(&mut terminal) && (lmb_pressed || rmb_pressed) {
-                self.update_selection_scrolling(y);
-            }
-        });
+        if !self.ctx.selection_is_empty() && (lmb_pressed || rmb_pressed) {
+            self.update_selection_scrolling(y);
+        }
 
         let x = min(max(x, 0), size_info.width() as i32 - 1) as usize;
         let y = min(max(y, 0), size_info.height() as i32 - 1) as usize;
@@ -563,14 +509,11 @@ impl<'a, T: EventListener, A: ActionContext<T>> Processor<'a, T, A> {
         let cell_side = self.get_mouse_side();
 
         let cell_changed =
-            point.line != self.ctx.mouse().line || point.col != self.ctx.mouse().column;
+            point.line != self.ctx.mouse().line || point.column != self.ctx.mouse().column;
 
         // Update mouse state and check for URL change.
         let mouse_state = self.mouse_state();
-
-        tm_cl!(self.ctx.tab_manager(), terminal, {
-            self.update_url_state(&mouse_state, &mut terminal);
-        });
+        self.update_url_state(&mouse_state);
         self.ctx.window_mut().set_mouse_cursor(mouse_state.into());
 
         // If the mouse hasn't changed cells, do nothing.
@@ -581,36 +524,20 @@ impl<'a, T: EventListener, A: ActionContext<T>> Processor<'a, T, A> {
             return;
         }
 
-        let point_tab_bar = size_info.pixels_to_coords_including_tab_bar(x, y);
-        if point_tab_bar.line.0 < 1 {
-            self.ctx.mouse_mut().inside_tab_bar = true;    
-        } else {
-            self.ctx.mouse_mut().inside_tab_bar = false;    
-        }
-
         self.ctx.mouse_mut().inside_text_area = inside_text_area;
         self.ctx.mouse_mut().cell_side = cell_side;
         self.ctx.mouse_mut().line = point.line;
-        self.ctx.mouse_mut().column = point.col;
+        self.ctx.mouse_mut().column = point.column;
 
         // Don't launch URLs if mouse has moved.
         self.ctx.mouse_mut().block_url_launcher = true;
 
-        tm_cl!(self.ctx.tab_manager(), terminal, {
-            let screen_lines = terminal.screen_lines();
-            let terminal_mode = terminal.mode().intersects(TermMode::MOUSE_MOTION | TermMode::MOUSE_DRAG);
-            let not_mouse_mode = !self.ctx.mouse_mode_wt(terminal);
-            let mouse_motion = terminal.mode().contains(TermMode::MOUSE_MOTION);
-        });
-        
-        if (lmb_pressed || rmb_pressed) && (self.ctx.modifiers().shift() || not_mouse_mode)
+        if (lmb_pressed || rmb_pressed) && (self.ctx.modifiers().shift() || !self.ctx.mouse_mode())
         {
-            tm_cl!(self.ctx.tab_manager(), terminal, {
-                self.ctx.update_selection_wt(point, cell_side, terminal);
-            });
+            self.ctx.update_selection(point, cell_side);
         } else if cell_changed
-            && point.line < screen_lines
-            && terminal_mode
+            && point.line < self.ctx.terminal().screen_lines()
+            && self.ctx.terminal().mode().intersects(TermMode::MOUSE_MOTION | TermMode::MOUSE_DRAG)
         {
             if lmb_pressed {
                 self.mouse_report(32, ElementState::Pressed);
@@ -618,12 +545,10 @@ impl<'a, T: EventListener, A: ActionContext<T>> Processor<'a, T, A> {
                 self.mouse_report(33, ElementState::Pressed);
             } else if self.ctx.mouse().right_button_state == ElementState::Pressed {
                 self.mouse_report(34, ElementState::Pressed);
-            } else if mouse_motion {
+            } else if self.ctx.terminal().mode().contains(TermMode::MOUSE_MOTION) {
                 self.mouse_report(35, ElementState::Pressed);
             }
         }
-
-        
     }
 
     fn get_mouse_side(&self) -> Side {
@@ -649,11 +574,8 @@ impl<'a, T: EventListener, A: ActionContext<T>> Processor<'a, T, A> {
     }
 
     fn normal_mouse_report(&mut self, button: u8) {
-        
         let (line, column) = (self.ctx.mouse().line, self.ctx.mouse().column);
-        tm_cl!(self.ctx.tab_manager(), terminal, {
-            let utf8 = terminal.mode().contains(TermMode::UTF8_MOUSE);
-        });
+        let utf8 = self.ctx.terminal().mode().contains(TermMode::UTF8_MOUSE);
 
         let max_point = if utf8 { 2015 } else { 223 };
 
@@ -681,8 +603,8 @@ impl<'a, T: EventListener, A: ActionContext<T>> Processor<'a, T, A> {
         } else {
             msg.push(32 + 1 + line.0 as u8);
         }
-        
-        self.ctx.write_to_pty(msg);;
+
+        self.ctx.write_to_pty(msg);
     }
 
     fn sgr_mouse_report(&mut self, button: u8, state: ElementState) {
@@ -710,12 +632,8 @@ impl<'a, T: EventListener, A: ActionContext<T>> Processor<'a, T, A> {
             mods += 16;
         }
 
-        tm_cl!(self.ctx.tab_manager(), terminal, {
-            let sgr_mouse = terminal.mode().contains(TermMode::SGR_MOUSE);
-        });
-
         // Report mouse events.
-        if sgr_mouse {
+        if self.ctx.terminal().mode().contains(TermMode::SGR_MOUSE) {
             self.sgr_mouse_report(button + mods, state);
         } else if let ElementState::Released = state {
             self.normal_mouse_report(3 + mods);
@@ -723,13 +641,10 @@ impl<'a, T: EventListener, A: ActionContext<T>> Processor<'a, T, A> {
             self.normal_mouse_report(button + mods);
         }
     }
+
     fn on_mouse_press(&mut self, button: MouseButton) {
         // Handle mouse mode.
-        tm_cl!(self.ctx.tab_manager(), terminal, {
-        let shift_and_mode = !self.ctx.modifiers().shift() && self.ctx.mouse_mode_wt(&mut terminal);
-        });
-
-        if shift_and_mode {
+        if !self.ctx.modifiers().shift() && self.ctx.mouse_mode() {
             self.ctx.mouse_mut().click_state = ClickState::None;
 
             let code = match button {
@@ -740,9 +655,7 @@ impl<'a, T: EventListener, A: ActionContext<T>> Processor<'a, T, A> {
                 MouseButton::Other(_) => return,
             };
 
-            
             self.mouse_report(code, ElementState::Pressed);
-            
         } else {
             // Calculate time since the last click to handle double/triple clicks.
             let now = Instant::now();
@@ -768,11 +681,8 @@ impl<'a, T: EventListener, A: ActionContext<T>> Processor<'a, T, A> {
 
             // Load mouse point, treating message bar and padding as the closest cell.
             let mouse = self.ctx.mouse();
-
-            tm_cl!(self.ctx.tab_manager(), terminal, {
-                let mut point = self.ctx.size_info().pixels_to_coords(mouse.x, mouse.y);
-                point.line = min(point.line, terminal.screen_lines() - 1);
-            });
+            let mut point = self.ctx.size_info().pixels_to_coords(mouse.x, mouse.y);
+            point.line = min(point.line, self.ctx.terminal().screen_lines() - 1);
 
             match button {
                 MouseButton::Left => self.on_left_click(point),
@@ -781,7 +691,6 @@ impl<'a, T: EventListener, A: ActionContext<T>> Processor<'a, T, A> {
                 _ => self.ctx.mouse_mut().click_state = ClickState::None,
             }
         }
-
     }
 
     /// Handle selection expansion on right click.
@@ -804,71 +713,59 @@ impl<'a, T: EventListener, A: ActionContext<T>> Processor<'a, T, A> {
 
     /// Expand existing selection.
     fn expand_selection(&mut self, point: Point, selection_type: SelectionType) {
-        tm_cl!(self.ctx.tab_manager(), terminal, {
-
         let cell_side = self.ctx.mouse().cell_side;
 
-        let selection = match &mut terminal.selection {
+        let selection = match &mut self.ctx.terminal_mut().selection {
             Some(selection) => selection,
             None => return,
         };
 
         selection.ty = selection_type;
-        self.ctx.update_selection_wt(point, cell_side, &mut terminal);
+        self.ctx.update_selection(point, cell_side);
 
         // Move vi mode cursor to mouse click position.
-        if terminal.mode().contains(TermMode::VI) && !self.ctx.search_active() {
-            terminal.vi_mode_cursor.point = point;
+        if self.ctx.terminal().mode().contains(TermMode::VI) && !self.ctx.search_active() {
+            self.ctx.terminal_mut().vi_mode_cursor.point = point;
         }
-        });
     }
 
     /// Handle left click selection and vi mode cursor movement.
     fn on_left_click(&mut self, point: Point) {
-        tm_cl!(self.ctx.tab_manager(), terminal, {
-
         let side = self.ctx.mouse().cell_side;
 
         match self.ctx.mouse().click_state {
             ClickState::Click => {
                 // Don't launch URLs if this click cleared the selection.
-                self.ctx.mouse_mut().block_url_launcher =
-                    !self.ctx.selection_is_empty_wt(&mut terminal);
+                self.ctx.mouse_mut().block_url_launcher = !self.ctx.selection_is_empty();
 
-                self.ctx.clear_selection_wt(&mut terminal);
+                self.ctx.clear_selection();
 
                 // Start new empty selection.
                 if self.ctx.modifiers().ctrl() {
-                    self.ctx.start_selection_wt(SelectionType::Block, point, side, &mut terminal);
+                    self.ctx.start_selection(SelectionType::Block, point, side);
                 } else {
-                    self.ctx.start_selection_wt(SelectionType::Simple, point, side, &mut terminal);
+                    self.ctx.start_selection(SelectionType::Simple, point, side);
                 }
             },
             ClickState::DoubleClick => {
                 self.ctx.mouse_mut().block_url_launcher = true;
-                self.ctx.start_selection_wt(SelectionType::Semantic, point, side, &mut terminal);
+                self.ctx.start_selection(SelectionType::Semantic, point, side);
             },
             ClickState::TripleClick => {
                 self.ctx.mouse_mut().block_url_launcher = true;
-                self.ctx.start_selection_wt(SelectionType::Lines, point, side, &mut terminal);
+                self.ctx.start_selection(SelectionType::Lines, point, side);
             },
             ClickState::None => (),
         };
 
         // Move vi mode cursor to mouse click position.
-        if terminal.mode().contains(TermMode::VI) && !self.ctx.search_active() {
-            terminal.vi_mode_cursor.point = point;
+        if self.ctx.terminal().mode().contains(TermMode::VI) && !self.ctx.search_active() {
+            self.ctx.terminal_mut().vi_mode_cursor.point = point;
         }
-
-        });
     }
 
     fn on_mouse_release(&mut self, button: MouseButton) {
-        tm_cl!(self.ctx.tab_manager(), terminal, {
-            let mouse_mode_if = !self.ctx.modifiers().shift() && self.ctx.mouse_mode_wt(&mut terminal);
-        });
-
-        if mouse_mode_if {
+        if !self.ctx.modifiers().shift() && self.ctx.mouse_mode() {
             let code = match button {
                 MouseButton::Left => 0,
                 MouseButton::Middle => 1,
@@ -876,19 +773,14 @@ impl<'a, T: EventListener, A: ActionContext<T>> Processor<'a, T, A> {
                 // Can't properly report more than three buttons.
                 MouseButton::Other(_) => return,
             };
-            
             self.mouse_report(code, ElementState::Released);
-            
             return;
         } else if let (MouseButton::Left, MouseState::Url(url)) = (button, self.mouse_state()) {
-            tm_cl!(self.ctx.tab_manager(), terminal, {
-                self.ctx.launch_url_wt(url, &mut terminal);
-            });
+            self.ctx.launch_url(url);
         }
 
         self.ctx.scheduler_mut().unschedule(TimerId::SelectionScrolling);
         self.copy_selection();
-
     }
 
     pub fn mouse_wheel_input(&mut self, delta: MouseScrollDelta, phase: TouchPhase) {
@@ -913,29 +805,22 @@ impl<'a, T: EventListener, A: ActionContext<T>> Processor<'a, T, A> {
     }
 
     fn scroll_terminal(&mut self, new_scroll_px: f64) {
-        tm_cl!(self.ctx.tab_manager(), terminal, {
-
-        let mouse_mode = self.ctx.mouse_mode_wt(&mut terminal);
-        let term_mode = terminal.mode().clone();
-        let term_vi_mode_point = terminal.vi_mode_cursor.point;
-        let selection_not_empty = !self.ctx.selection_is_empty_wt(&mut terminal);
-
-        });
-
         let height = f64::from(self.ctx.size_info().cell_height());
 
-        if mouse_mode {
+        if self.ctx.mouse_mode() {
             self.ctx.mouse_mut().scroll_px += new_scroll_px;
 
             let code = if new_scroll_px > 0. { 64 } else { 65 };
             let lines = (self.ctx.mouse().scroll_px / height).abs() as i32;
 
-            
             for _ in 0..lines {
                 self.mouse_report(code, ElementState::Pressed);
             }
-            
-        } else if term_mode.contains(TermMode::ALT_SCREEN | TermMode::ALTERNATE_SCROLL)
+        } else if self
+            .ctx
+            .terminal()
+            .mode()
+            .contains(TermMode::ALT_SCREEN | TermMode::ALTERNATE_SCROLL)
             && !self.ctx.modifiers().shift()
         {
             let multiplier = f64::from(self.ctx.config().scrolling.multiplier);
@@ -958,37 +843,30 @@ impl<'a, T: EventListener, A: ActionContext<T>> Processor<'a, T, A> {
             let lines = self.ctx.mouse().scroll_px / height;
 
             // Store absolute position of vi mode cursor.
-
-            tm_cl!(self.ctx.tab_manager(), terminal, {
-                let absolute = terminal.visible_to_buffer(terminal.vi_mode_cursor.point);
-            });
+            let term = self.ctx.terminal();
+            let absolute = term.visible_to_buffer(term.vi_mode_cursor.point);
 
             self.ctx.scroll(Scroll::Delta(lines as isize));
 
             // Try to restore vi mode cursor position, to keep it above its previous content.
+            let term = self.ctx.terminal_mut();
+            term.vi_mode_cursor.point = term.grid().clamp_buffer_to_visible(absolute);
+            term.vi_mode_cursor.point.column = absolute.column;
 
-            tm_cl!(self.ctx.tab_manager(), terminal, {
-                terminal.vi_mode_cursor.point = terminal.grid().clamp_buffer_to_visible(absolute);
-                terminal.vi_mode_cursor.point.col = absolute.col;
-
-                // Update selection.
-                if term_mode.contains(TermMode::VI) {
-                    if selection_not_empty {
-                        self.ctx.update_selection_wt(terminal.vi_mode_cursor.point, Side::Right, &mut terminal);
-                    }
+            // Update selection.
+            if term.mode().contains(TermMode::VI) {
+                let point = term.vi_mode_cursor.point;
+                if !self.ctx.selection_is_empty() {
+                    self.ctx.update_selection(point, Side::Right);
                 }
-            });
+            }
         }
 
         self.ctx.mouse_mut().scroll_px %= height;
-
     }
 
     pub fn on_focus_change(&mut self, is_focused: bool) {
-        tm_cl!(self.ctx.tab_manager(), terminal, {
-            let is_focus = terminal.mode().contains(TermMode::FOCUS_IN_OUT);
-        });
-        if is_focus {
+        if self.ctx.terminal().mode().contains(TermMode::FOCUS_IN_OUT) {
             let chr = if is_focused { "I" } else { "O" };
 
             let msg = format!("\x1b[{}", chr);
@@ -1005,20 +883,7 @@ impl<'a, T: EventListener, A: ActionContext<T>> Processor<'a, T, A> {
         }
 
         // Skip normal mouse events if the message bar has been clicked.
-        if self.ctx.mouse().line.0 == 0 && state == ElementState::Pressed {
-            match self.ctx.find_tab(self.ctx.mouse().column) {
-                Some(tab_idx) => {
-                    let tm = self.ctx.tab_manager().clone();
-                    let tmguard = tm.read().unwrap();
-                    let tab_manager = & *tmguard;
-                    tab_manager.select_tab(tab_idx);
-                    drop(tmguard);
-                },
-                None => {
-
-                }
-            }
-        } else if self.message_or_tab_bar_mouse_state() == Some(MouseState::MessageBarButton)
+        if self.message_bar_mouse_state() == Some(MouseState::MessageBarButton)
             && state == ElementState::Pressed
         {
             let size = self.ctx.size_info();
@@ -1057,7 +922,8 @@ impl<'a, T: EventListener, A: ActionContext<T>> Processor<'a, T, A> {
                 let mouse = self.ctx.mouse();
                 let mut point = self.ctx.size_info().pixels_to_coords(mouse.x, mouse.y);
                 let side = self.ctx.mouse().cell_side;
-                let word_clicked = self.ctx.find_word(point, side);
+                let terminal = self.ctx.terminal();
+                let word_clicked = self.ctx.find_word(point, side, terminal);
 
                 if state == ElementState::Pressed {
                     self.ctx.write_to_pty(word_clicked.as_bytes().to_vec());
@@ -1096,12 +962,9 @@ impl<'a, T: EventListener, A: ActionContext<T>> Processor<'a, T, A> {
     pub fn modifiers_input(&mut self, modifiers: ModifiersState) {
         *self.ctx.modifiers() = modifiers;
 
-        
         // Update mouse state and check for URL change.
         let mouse_state = self.mouse_state();
-        tm_cl!(self.ctx.tab_manager(), terminal, {
-            self.update_url_state(&mouse_state, &mut terminal);
-        });
+        self.update_url_state(&mouse_state);
         self.ctx.window_mut().set_mouse_cursor(mouse_state.into());
     }
 
@@ -1114,19 +977,15 @@ impl<'a, T: EventListener, A: ActionContext<T>> Processor<'a, T, A> {
 
     /// Process a received character.
     pub fn received_char(&mut self, c: char) {
-        // println!("\nreceived char: {}\n", c);
         let suppress_chars = *self.ctx.suppress_chars();
         let search_active = self.ctx.search_active();
-        tm_cl!(self.ctx.tab_manager(), terminal, {
-            let is_vi_mode = terminal.mode().contains(TermMode::VI);
-        });
-        if suppress_chars || is_vi_mode || search_active {
+        if suppress_chars || self.ctx.terminal().mode().contains(TermMode::VI) || search_active {
             if search_active && !suppress_chars {
                 self.ctx.search_input(c);
             }
+
             return;
         }
-        
 
         self.ctx.on_typing_start();
 
@@ -1158,9 +1017,7 @@ impl<'a, T: EventListener, A: ActionContext<T>> Processor<'a, T, A> {
     /// The provided mode, mods, and key must match what is allowed by a binding
     /// for its action to be executed.
     fn process_key_bindings(&mut self, input: KeyboardInput) {
-        tm_cl!(self.ctx.tab_manager(), terminal, {
-            let mode = BindingMode::new(terminal.mode(), self.ctx.search_active());
-        });
+        let mode = BindingMode::new(self.ctx.terminal().mode(), self.ctx.search_active());
         let mods = *self.ctx.modifiers();
         let mut suppress_chars = None;
 
@@ -1181,7 +1038,6 @@ impl<'a, T: EventListener, A: ActionContext<T>> Processor<'a, T, A> {
                 // Pass through the key if any of the bindings has the `ReceiveChar` action.
                 *suppress_chars.get_or_insert(true) &= binding.action != Action::ReceiveChar;
             }
-            // binding.execute(&mut self.ctx);
         }
 
         // Don't suppress char if no bindings were triggered.
@@ -1193,9 +1049,7 @@ impl<'a, T: EventListener, A: ActionContext<T>> Processor<'a, T, A> {
     /// The provided mode, mods, and key must match what is allowed by a binding
     /// for its action to be executed.
     fn process_mouse_bindings(&mut self, button: MouseButton) {
-        tm_cl!(self.ctx.tab_manager(), terminal, {
-            let mode = BindingMode::new(terminal.mode(), self.ctx.search_active());
-        });
+        let mode = BindingMode::new(self.ctx.terminal().mode(), self.ctx.search_active());
         let mouse_mode = self.ctx.mouse_mode();
         let mods = *self.ctx.modifiers();
 
@@ -1214,37 +1068,24 @@ impl<'a, T: EventListener, A: ActionContext<T>> Processor<'a, T, A> {
     }
 
     /// Check mouse state in relation to the message bar.
-    fn message_or_tab_bar_mouse_state(&self) -> Option<MouseState> {
+    fn message_bar_mouse_state(&self) -> Option<MouseState> {
+        // Since search is above the message bar, the button is offset by search's height.
+        let search_height = if self.ctx.search_active() { 1 } else { 0 };
+
+        // Calculate Y position of the end of the last terminal line.
+        let size = self.ctx.size_info();
+        let terminal_end = size.padding_y() as usize
+            + size.cell_height() as usize * (size.screen_lines().0 + search_height);
+
         let mouse = self.ctx.mouse();
-        
-        if mouse.inside_tab_bar {
-            match self.ctx.find_tab(mouse.column) {
-                Some(tab_idx) => {
-                    Some(MouseState::TabBarButton)
-                }, 
-                None => {
-                    None
-                }
-            }
+        if self.ctx.message().is_none() || (mouse.y <= terminal_end) {
+            None
+        } else if mouse.y <= terminal_end + size.cell_height() as usize
+            && mouse.column + message_bar::CLOSE_BUTTON_TEXT.len() >= size.cols()
+        {
+            Some(MouseState::MessageBarButton)
         } else {
-            // Since search is above the message bar, the button is offset by search's height.
-            let search_height = if self.ctx.search_active() { 1 } else { 0 };
-
-            // Calculate Y position of the end of the last terminal line.
-            let size = self.ctx.size_info();
-            let terminal_end = size.padding_y() as usize
-                + size.cell_height() as usize * (size.screen_lines().0 + search_height);
-
-            
-            if self.ctx.message().is_none() || (mouse.y <= terminal_end) {
-                None
-            } else if mouse.y <= terminal_end - size.cell_height() as usize
-                && mouse.column + message_bar::CLOSE_BUTTON_TEXT.len() >= size.cols()
-            {
-                Some(MouseState::MessageBarButton)
-            } else {
-                Some(MouseState::MessageBar)
-            }
+            Some(MouseState::MessageBar)
         }
     }
 
@@ -1258,41 +1099,40 @@ impl<'a, T: EventListener, A: ActionContext<T>> Processor<'a, T, A> {
 
     /// Trigger redraw when URL highlight changed.
     #[inline]
-    fn update_url_state(&mut self, mouse_state: &MouseState, terminal: &mut Term<EventProxy>) {
+    fn update_url_state(&mut self, mouse_state: &MouseState) {
+        let highlighted_url = self.ctx.highlighted_url();
         if let MouseState::Url(url) = mouse_state {
-            if Some(url) != self.highlighted_url.as_ref() {
-                terminal.dirty = true;
+            if Some(url) != highlighted_url {
+                self.ctx.mark_dirty();
             }
-        } else if self.highlighted_url.is_some() {
-            terminal.dirty = true;
+        } else if highlighted_url.is_some() {
+            self.ctx.mark_dirty();
         }
     }
 
     /// Location of the mouse cursor.
     fn mouse_state(&mut self) -> MouseState {
         // Check message bar before URL to ignore URLs in the message bar.
-        if let Some(mouse_state) = self.message_or_tab_bar_mouse_state() {
+        if let Some(mouse_state) = self.message_bar_mouse_state() {
             return mouse_state;
         }
 
-        tm_cl!(self.ctx.tab_manager(), terminal, {
-            let mouse_mode = self.ctx.mouse_mode_wt(terminal);
+        let mouse_mode = self.ctx.mouse_mode();
 
-            // Check for URL at mouse cursor.
-            let mods = *self.ctx.modifiers();
-            let highlighted_url = self.ctx.urls().highlighted(
-                self.ctx.config(),
-                self.ctx.mouse(),
-                mods,
-                mouse_mode,
-                !self.ctx.selection_is_empty_wt(terminal),
-            );
+        // Check for URL at mouse cursor.
+        let mods = *self.ctx.modifiers();
+        let highlighted_url = self.ctx.urls().highlighted(
+            self.ctx.config(),
+            self.ctx.mouse(),
+            mods,
+            mouse_mode,
+            !self.ctx.selection_is_empty(),
+        );
 
-            if let Some(url) = highlighted_url {
-                return MouseState::Url(url);
-            }
+        if let Some(url) = highlighted_url {
+            return MouseState::Url(url);
+        }
 
-        });
         // Check mouse mode if location is not special.
         if !self.ctx.modifiers().shift() && mouse_mode {
             MouseState::Mouse
@@ -1300,10 +1140,8 @@ impl<'a, T: EventListener, A: ActionContext<T>> Processor<'a, T, A> {
             MouseState::Text
         }
     }
-    
 
     /// Handle automatic scrolling when selecting above/below the window.
-
     fn update_selection_scrolling(&mut self, mouse_y: i32) {
         let dpr = self.ctx.window().dpr;
         let size = self.ctx.size_info();
@@ -1347,7 +1185,6 @@ impl<'a, T: EventListener, A: ActionContext<T>> Processor<'a, T, A> {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1362,13 +1199,10 @@ mod tests {
     const KEY: VirtualKeyCode = VirtualKeyCode::Key0;
 
     struct MockEventProxy;
-
-    impl EventListener for MockEventProxy {
-        fn send_event(&self, _event: TerminalEvent) {}
-    }
+    impl EventListener for MockEventProxy {}
 
     struct ActionContext<'a, T> {
-        pub tab_mananger: Arc<RwLock<TabManager>>,
+        pub tab_mananger: Arc<TabManager>,
         // pub terminal: &'a mut Term<T>,
         pub selection: &'a mut Option<Selection>,
         pub size_info: &'a SizeInfo,
@@ -1382,55 +1216,14 @@ mod tests {
     }
 
     impl<'a, T: EventListener> super::ActionContext<T> for ActionContext<'a, T> {
-
-        
-        fn write_to_pty<B: Into<Cow<'static, [u8]>>>(&mut self, _val: B) {}
-
-        fn update_selection(&mut self, _point: Point, _side: Side) {}
-
-        fn update_selection_wt(&mut self, _point: Point, _side: Side, terminal: &mut Term<EventProxy>) {}
-
-        fn start_selection_wt(&mut self, ty: SelectionType, point: Point, side: Side, terminal: &mut Term<EventProxy>) {}
-        fn start_selection(&mut self, _ty: SelectionType, _point: Point, _side: Side) {}
-
-        fn toggle_selection(&mut self, _ty: SelectionType, _point: Point, _side: Side) {}
-
-        fn copy_selection(&mut self, _: ClipboardType) {}
-
-        fn clear_selection(&mut self) {}
-
-        fn spawn_new_instance(&mut self) {}
-
-        fn change_font_size(&mut self, _delta: f32) {}
-
-        fn reset_font_size(&mut self) {}
-
-        fn start_search(&mut self, _direction: Direction) {}
-
-        fn start_search_wt(&mut self, direction: Direction, terminal: &mut Term<EventProxy>) {}
-
-        fn confirm_search(&mut self) {}
-
-        fn confirm_search_wt(&mut self, terminal: &mut Term<EventProxy>) {}
-
-        fn cancel_search(&mut self) {}
-
-        fn search_input(&mut self, _c: char) {}
-
-        fn search_input_wt(&mut self, c: char, terminal: &mut Term<EventProxy>) {}
-
-        fn search_pop_word(&mut self) {}
-
-        fn search_history_previous(&mut self) {}
-
-        fn search_history_next(&mut self) {}
-
-        fn toggle_grep_mode(&mut self) {}
-
-        fn set_grep_mode_to(&mut self, to_val: bool) {}
-
-
-        fn advance_search_origin(&mut self, _direction: Direction) {}
+        fn search_next(
+            &mut self,
+            _origin: Point<usize>,
+            _direction: Direction,
+            _side: Side,
+        ) -> Option<Match> {
+            None
+        }
 
         fn search_direction(&self) -> Direction {
             Direction::Right
@@ -1440,32 +1233,13 @@ mod tests {
             false
         }
 
-        fn find_tab(&self, col: Column) -> Option<usize> {
-            None
+        fn tab_manager(&mut self) -> Arc<TabManager> {
+            unimplemented!();
         }
 
-        fn find_word(&mut self, point: Point, side: Side) -> String {
+        fn find_word<U: EventListener>(&self, point_p: Point, side: Side, terminal: &Term<U>) -> String {
             ""
         }
-
-        fn toggle_selection_wt(&mut self, ty: SelectionType, point: Point, side: Side, terminal: &mut Term<EventProxy>) {
-            
-        }
-
-        fn clear_selection_wt(&mut self, terminal: &mut Term<EventProxy>) {
-
-        }
-        fn selection_is_empty_wt(&self, terminal: &mut Term<EventProxy>) -> bool {
-            true
-        }
-
-        fn launch_url_wt(&self, url: Url, terminal: &mut Term<EventProxy>) {
-
-        }
-        fn tab_manager(&self) -> Arc<RwLock<TabManager>> {
-            return self.tab_manager.clone();
-        }
-
         fn size_info(&self) -> SizeInfo {
             *self.size_info
         }
@@ -1489,9 +1263,6 @@ mod tests {
             }
         }
 
-        fn mouse_mode_wt(&self, terminal: &mut Term<EventProxy>) -> bool {
-            false
-        }
         fn mouse_mode(&self) -> bool {
             false
         }
@@ -1528,6 +1299,14 @@ mod tests {
             unimplemented!();
         }
 
+        fn terminal(& self) -> &Term<T> {
+            unimplemented!();
+        }
+
+        fn terminal_mut(&mut self) -> &mut Term<EventProxy> {
+            unimplemented();
+        }
+
         fn pop_message(&mut self) {
             self.message_buffer.pop();
         }
@@ -1552,15 +1331,11 @@ mod tests {
             unimplemented!();
         }
 
-        fn launch_url(&self, _: Url) {
+        fn highlighted_url(&self) -> Option<&Url> {
             unimplemented!();
         }
 
         fn scheduler_mut(&mut self) -> &mut Scheduler {
-            unimplemented!();
-        }
-
-        fn on_typing_start(&mut self) {
             unimplemented!();
         }
     }
@@ -1611,7 +1386,7 @@ mod tests {
                     config: &cfg,
                 };
 
-                let mut processor = Processor::new(context, &None);
+                let mut processor = Processor::new(context);
 
                 let event: GlutinEvent::<'_, TerminalEvent> = $input;
                 if let GlutinEvent::WindowEvent {

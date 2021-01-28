@@ -29,23 +29,26 @@ use serde_json as json;
 
 use crossfont::{self, Size};
 
+use crate::display::content::RenderableContent;
+use crate::display::color::List;
+
 use alacritty_terminal::config::LOG_TARGET_CONFIG;
 use alacritty_terminal::event::{Event as TerminalEvent, EventListener, Notify, OnResize};
 use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::index::{Boundary, Column, Direction, Line, Point, Side};
 use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::sync::FairMutex;
+use alacritty_terminal::term::search::{Match, RegexSearch};
 use alacritty_terminal::term::{ClipboardType, SizeInfo, Term, TermMode};
 
-
-
-use crate::tab_manager::TabManager;
+use crate::tab_manager::{self, TabManager};
 
 use crate::cli::Options as CLIOptions;
 use crate::clipboard::Clipboard;
 use crate::config;
 use crate::config::Config;
 use crate::daemon::start_daemon;
+use crate::display::window::Window;
 use crate::display::{Display, DisplayUpdate};
 use crate::input::{self, ActionContext as _, FONT_SIZE_STEP};
 #[cfg(target_os = "macos")]
@@ -53,7 +56,6 @@ use crate::macos;
 use crate::message_bar::{Message, MessageBuffer};
 use crate::scheduler::{Scheduler, TimerId};
 use crate::url::{Url, Urls};
-use crate::window::Window;
 
 
 // use js_sandbox::{Script, AnyError};
@@ -130,13 +132,17 @@ pub struct SearchState {
 
     /// Search regex and history.
     ///
-    /// When a search is currently active, the first element will be what the user can modify in
-    /// the current search session. While going through history, the [`history_index`] will point
-    /// to the element in history which is currently being previewed.
+    /// During an active search, the first element is the user's current input.
+    ///
+    /// While going through history, the [`SearchState::history_index`] will point to the element
+    /// in history which is currently being previewed.
     history: VecDeque<String>,
 
     /// Current position in the search history.
     history_index: Option<usize>,
+
+    /// Compiled search automatons.
+    dfas: Option<RegexSearch>,
 }
 
 impl SearchState {
@@ -163,6 +169,11 @@ impl SearchState {
         self.focused_match.as_ref()
     }
 
+    /// Active search dfas.
+    pub fn dfas(&self) -> Option<&RegexSearch> {
+        self.dfas.as_ref()
+    }
+
     /// Search regex text if a search is active.
     fn regex_mut(&mut self) -> Option<&mut String> {
         self.history_index.and_then(move |index| self.history.get_mut(index))
@@ -179,313 +190,222 @@ impl Default for SearchState {
             history_index: Default::default(),
             history: Default::default(),
             origin: Default::default(),
+            dfas: Default::default(),
         }
     }
 }
 
 pub struct ActionContext<'a> {
-    pub tab_manager: Arc<RwLock<TabManager>>,
-    // pub terminal: &'a mut Term<EventProxy>,
+    pub tab_manager: Arc<TabManager>,
+    pub terminal: &'a mut Term<EventProxy>,
     pub clipboard: &'a mut Clipboard,
-    pub size_info: &'a mut SizeInfo,
     pub mouse: &'a mut Mouse,
     pub received_count: &'a mut usize,
     pub suppress_chars: &'a mut bool,
     pub modifiers: &'a mut ModifiersState,
-    pub window: &'a mut Window,
+    pub display: &'a mut Display,
     pub message_buffer: &'a mut MessageBuffer,
     pub display_update_pending: &'a mut DisplayUpdate,
     pub config: &'a mut Config,
     pub event_loop: &'a EventLoopWindowTarget<Event>,
-    pub urls: &'a Urls,
     pub scheduler: &'a mut Scheduler,
     pub search_state: &'a mut SearchState,
-    cursor_hidden: &'a mut bool,
     cli_options: &'a CLIOptions,
     font_size: &'a mut Size,
-}
-
-impl<'a> ActionContext<'a> {
-    pub fn with_terminal<Y: FnMut(&mut Term<EventProxy>)>(&mut self, mut terminal_closure: Y) {
-        tm_cl!(self.tab_manager, terminal, {
-            terminal_closure(terminal);
-        });
-    }
+    dirty: bool,
 }
 
 impl<'a> input::ActionContext<EventProxy> for ActionContext<'a> {
     #[inline]
-    fn search_pop_word(&mut self) {
-        if let Some(regex) = self.search_state.regex_mut() {
-            *regex = regex.trim_end().to_owned();
-            regex.truncate(regex.rfind(' ').map(|i| i + 1).unwrap_or(0));
-            self.update_search();
-        }
-    }
-
-    fn tab_manager(&self) -> Arc<RwLock<TabManager>> {
-        return self.tab_manager.clone();
-    }
-
     fn write_to_pty<B: Into<Cow<'static, [u8]>>>(&mut self, val: B) {
-        let tab_manager_guard = self.tab_manager.read().unwrap();
-        let tab_manager: & TabManager = & *tab_manager_guard;
+        let tab_manager = self.tab_manager();
         let c: Cow<[u8]> = val.into();
         let vc: Vec<u8> = c.into_iter().map(|c| *c).collect();
-        tab_manager.receive_stdin(&vc);
-        drop(tab_manager_guard);
+        // tab_manager.receive_stdin(&vc);
+        let data: &[u8] = &vc;
+        (&mut *(tab_manager.selected_tab_arc().pty.lock())).write(data);
+        
     }
 
+    /// Request a redraw.
+    #[inline]
+    fn mark_dirty(&mut self) {
+        self.dirty = true;
+    }
+
+    #[inline]
     fn size_info(&self) -> SizeInfo {
-        *self.size_info
+        self.display.size_info
     }
 
     fn scroll(&mut self, scroll: Scroll) {
-        let mut old_offset = 0;
+        let old_offset = self.terminal().grid().display_offset() as isize;
 
-        tm_cl!(self.tab_manager, terminal, {
-            old_offset = terminal.grid().display_offset() as isize;
-            terminal.scroll_display(scroll);
-        });
+        self.terminal_mut().scroll_display(scroll);
 
         // Keep track of manual display offset changes during search.
         if self.search_active() {
-            tm_cl!(self.tab_manager, terminal, {
-                let display_offset = terminal.grid().display_offset();
-                self.search_state.display_offset_delta += old_offset - display_offset as isize;
-            });
+            let display_offset = self.terminal().grid().display_offset();
+            self.search_state.display_offset_delta += old_offset - display_offset as isize;
         }
 
         // Update selection.
-        tm_cl!(self.tab_manager, terminal, {
-            if terminal.mode().contains(TermMode::VI)
-                && terminal.selection.as_ref().map(|s| s.is_empty()) != Some(true)
-            {
-                self.update_selection_wt(terminal.vi_mode_cursor.point, Side::Right, &mut terminal);
-            } else if self.mouse().left_button_state == ElementState::Pressed
-                || self.mouse().right_button_state == ElementState::Pressed
-            {
-                let point = self.size_info().pixels_to_coords(self.mouse().x, self.mouse().y);
-                let cell_side = self.mouse().cell_side;
-                self.update_selection_wt(
-                    Point { line: point.line, col: point.col },
-                    cell_side,
-                    &mut terminal,
-                );
-            }
-        });
+        if self.terminal().mode().contains(TermMode::VI)
+            && self.terminal().selection.as_ref().map(|s| s.is_empty()) != Some(true)
+        {
+            self.update_selection(self.terminal().vi_mode_cursor.point, Side::Right);
+        } else if self.mouse().left_button_state == ElementState::Pressed
+            || self.mouse().right_button_state == ElementState::Pressed
+        {
+            let point = self.size_info().pixels_to_coords(self.mouse().x, self.mouse().y);
+            let cell_side = self.mouse().cell_side;
+            self.update_selection(point, cell_side);
+        }
+
+        self.dirty = true;
     }
 
+
     fn copy_selection(&mut self, ty: ClipboardType) {
-        tm_cl!(self.tab_manager, terminal, {
-            if let Some(selected) = terminal.selection_to_string() {
+        
+            if let Some(selected) = self.terminal.selection_to_string() {
                 if !selected.is_empty() {
                     self.clipboard.store(ty, selected);
                 }
             }
-        });
-    }
-
-    fn selection_is_empty(&self) -> bool {
-        tm_cl!(self.tab_manager, terminal, {
-            let r = self.selection_is_empty_wt(&mut terminal);
-        });
-
-        r
+        
     }
 
     fn clear_selection(&mut self) {
-        tm_cl!(self.tab_manager, terminal, {
-            self.clear_selection_wt(&mut terminal);
-        });
+        self.terminal.selection = None;
+        self.dirty = true;
     }
 
-    fn selection_is_empty_wt(&self, terminal: &mut Term<EventProxy>) -> bool {
-        terminal.selection.as_ref().map(Selection::is_empty).unwrap_or(true)
-    }
-
-    fn clear_selection_wt(&mut self, terminal: &mut Term<EventProxy>) {
-        terminal.selection = None;
-        terminal.dirty = true;
-    }
-
-    fn update_selection_wt(
-        &mut self,
-        mut point: Point,
-        side: Side,
-        terminal: &mut Term<EventProxy>,
-    ) {
-        let mut selection = match terminal.selection.take() {
+    fn update_selection(&mut self, mut point: Point, side: Side) {
+        let mut selection = match self.terminal.selection.take() {
             Some(selection) => selection,
             None => return,
         };
 
         // Treat motion over message bar like motion over the last line.
-        point.line = min(point.line, terminal.screen_lines() - 1);
+        point.line = min(point.line, self.terminal.screen_lines() - 1);
 
         // Update selection.
-        let absolute_point = terminal.visible_to_buffer(point);
+        let absolute_point = self.terminal.visible_to_buffer(point);
         selection.update(absolute_point, side);
 
         // Move vi cursor and expand selection.
-        if terminal.mode().contains(TermMode::VI) && !self.search_active() {
-            terminal.vi_mode_cursor.point = point;
+        if self.terminal.mode().contains(TermMode::VI) && !self.search_active() {
+            self.terminal.vi_mode_cursor.point = point;
             selection.include_all();
         }
 
-        terminal.selection = Some(selection);
-        terminal.dirty = true;
+        self.terminal.selection = Some(selection);
+        self.dirty = true;
     }
 
-    fn update_selection(&mut self, mut point: Point, side: Side) {
-        tm_cl!(self.tab_manager, terminal, {
-            self.update_selection_wt(point, side, &mut terminal);
-        });
-    }
 
-    fn start_selection_wt(
-        &mut self,
-        ty: SelectionType,
-        point: Point,
-        side: Side,
-        terminal: &mut Term<EventProxy>,
-    ) {
-        // let point_p: Point<Line> = Point::new(point.line - 1, point.col);
-        terminal.selection = Some(Selection::new(ty, terminal.visible_to_buffer(point), side));
-        terminal.dirty = true;
+    fn selection_is_empty(&self) -> bool {
+        self.terminal().selection.as_ref().map(Selection::is_empty).unwrap_or(true)
     }
 
     fn start_selection(&mut self, ty: SelectionType, point: Point, side: Side) {
-        tm_cl!(self.tab_manager, terminal, {
-            self.start_selection_wt(ty, point, side, &mut terminal);
-        });
+        let point = self.terminal.visible_to_buffer(point);
+        self.terminal.selection = Some(Selection::new(ty, point, side));
+        self.dirty = true;
     }
 
-    fn find_word(&mut self, point_p: Point, side: Side) -> String {
-        let point: Point = Point::new(point_p.line - 1, point_p.col);
 
+    fn tab_manager(&mut self) -> Arc<TabManager> {
+        self.tab_manager.clone()
+    }
+
+    fn find_word<U: EventListener>(&self, point: Point, side: Side, terminal: &Term<U>) -> String {
         let mut ret: String = "".to_string();
-        tm_cl!(self.tab_manager, terminal, {
-            let grid_cells =
-                terminal.renderable_content(self.config, *self.cursor_hidden, false, "".to_string(), 0).collect::<Vec<_>>();
 
-            // let mut lastEmpty = true;
-            let mut found_point = false;
-            let mut found_end = false;
-            let mut string = String::new();
-            let mut last_column = 0;
-            let mut cell_iter = grid_cells.iter();
-            let mut cell_or_none = cell_iter.next();
-            while found_end == false && !cell_or_none.is_none() {
-                let cell = (*cell_or_none.unwrap()).clone();
-                let mut c = cell.character;
 
-                if last_column + 1 != cell.column.0 || c == ' ' {
-                    if found_point {
-                        found_end = true;
-                    } else {
-                        string = String::new();
-                        if c != ' ' {
-                            string.push(c.clone());
-                        }
-                    }
+        let dfas = self.search_state.dfas();
+        let colors = List::from(&self.config.ui_config.colors);
+        let mut content = RenderableContent::new(&terminal, dfas, self.config, &colors, false);
+        let mut grid_cells = Vec::new();
+        
+        while let Some(cell) = content.next() {
+            grid_cells.push(cell);
+        }
+    
+
+        // let mut lastEmpty = true;
+        let mut found_point = false;
+        let mut found_end = false;
+        let mut string = String::new();
+        let mut last_column = 0;
+        let mut cell_iter = grid_cells.iter();
+        let mut cell_or_none = cell_iter.next();
+        while found_end == false && !cell_or_none.is_none() {
+            let cell = (*cell_or_none.unwrap()).clone();
+            let mut c = cell.character;
+
+            if last_column + 1 != cell.point.column.0 || c == ' ' {
+                if found_point {
+                    found_end = true;
                 } else {
-                    string.push(c.clone());
+                    string = String::new();
+                    if c != ' ' {
+                        string.push(c.clone());
+                    }
                 }
-
-                if cell.column == point.col && cell.line == point.line {
-                    found_point = true;
-                }
-                cell_or_none = cell_iter.next();
-                last_column = cell.column.0;
-            }
-
-            if found_point {
-                ret = string;
             } else {
-                ret = String::new();
+                string.push(c.clone());
             }
-        });
 
-        return ret;
-    }
-
-    fn find_tab(&self, col: Column) -> Option<usize> {
-        //"[000] [000] [000] "
-        let mut ret: Option<usize> = None;
-
-        let c = col.0;
-
-        let tm = self.tab_manager.clone();
-        let tmguard = tm.read().unwrap();
-        let tab_manager = & *tmguard;
-
-        let tab_len = tab_manager.num_tabs();
-        // One tab takes up 6 spaces
-        if c < (tab_len * 6) {
-            if c % 6 != 0 {
-                ret = Some(c / 6)
+            if cell.point.column == point.column && cell.point.line == point.line {
+                found_point = true;
             }
+            cell_or_none = cell_iter.next();
+            last_column = cell.point.column.0;
         }
 
-        drop(tmguard);
+        if found_point {
+            ret = string;
+        } else {
+            ret = String::new();
+        }
 
         return ret;
     }
 
-    fn toggle_selection_wt(
-        &mut self,
-        ty: SelectionType,
-        point: Point,
-        side: Side,
-        terminal: &mut Term<EventProxy>,
-    ) {
-        match &mut terminal.selection {
+
+
+    fn toggle_selection(&mut self, ty: SelectionType, point: Point, side: Side) {
+        match &mut self.terminal_mut().selection {
             Some(selection) if selection.ty == ty && !selection.is_empty() => {
-                self.clear_selection_wt(terminal);
+                self.clear_selection();
             },
             Some(selection) if !selection.is_empty() => {
                 selection.ty = ty;
-                terminal.dirty = true;
+                self.dirty = true;
             },
-            _ => self.start_selection_wt(ty, point, side, terminal),
+            _ => self.start_selection(ty, point, side),
         }
     }
 
-    fn toggle_selection(&mut self, ty: SelectionType, point: Point, side: Side) {
-        tm_cl!(self.tab_manager, terminal, {
-            self.toggle_selection_wt(ty, point, side, &mut terminal);
-        });
-    }
 
     fn mouse_coords(&self) -> Option<Point> {
         let x = self.mouse.x as usize;
         let y = self.mouse.y as usize;
 
-        if self.size_info.contains_point(x, y) {
-            Some(self.size_info.pixels_to_coords(x, y))
+        if self.display.size_info.contains_point(x, y) {
+            Some(self.display.size_info.pixels_to_coords(x, y))
         } else {
             None
         }
     }
 
-    #[inline]
-    fn mouse_mode_wt(&self, terminal: &mut Term<EventProxy>) -> bool {
-        let mut r: bool = true;
-
-        r = terminal.mode().intersects(TermMode::MOUSE_MODE)
-            && !terminal.mode().contains(TermMode::VI);
-
-        r
-    }
 
     #[inline]
     fn mouse_mode(&self) -> bool {
-        let mut r: bool = true;
-        tm_cl!(self.tab_manager, terminal, {
-            r = self.mouse_mode_wt(&mut terminal);
-        });
-        r
+        self.terminal.mode().intersects(TermMode::MOUSE_MODE)
+            && !self.terminal.mode().contains(TermMode::VI)
     }
 
     #[inline]
@@ -515,13 +435,22 @@ impl<'a> input::ActionContext<EventProxy> for ActionContext<'a> {
 
     #[inline]
     fn window(&self) -> &Window {
-        self.window
+        &self.display.window
     }
 
     #[inline]
     fn window_mut(&mut self) -> &mut Window {
-        self.window
+        &mut self.display.window
     }
+
+    fn terminal(&self) -> &Term<EventProxy> {
+        &self.terminal
+    }
+
+    fn terminal_mut(&mut self) -> &mut Term<EventProxy> {
+        &mut self.terminal
+    }
+
 
     fn spawn_new_instance(&mut self) {
         // TODO: Important
@@ -570,44 +499,37 @@ impl<'a> input::ActionContext<EventProxy> for ActionContext<'a> {
         // start_daemon(&alacritty, &args);
     }
 
-    fn launch_url(&self, url: Url) {
-        let mut r: bool = true;
-        tm_cl!(self.tab_manager, terminal, {
-            self.launch_url_wt(url, &mut terminal);
-        });
-    }
-
     /// Spawn URL launcher when clicking on URLs.
-    fn launch_url_wt(&self, url: Url, terminal: &mut Term<EventProxy>) {
+    fn launch_url(&self, url: Url) {
         if self.mouse.block_url_launcher {
             return;
         }
 
         if let Some(ref launcher) = self.config.ui_config.mouse.url.launcher {
             let mut args = launcher.args().to_vec();
-            let start = terminal.visible_to_buffer(url.start());
-            let end = terminal.visible_to_buffer(url.end());
-            args.push(terminal.bounds_to_string(start, end));
+            let start = self.terminal().visible_to_buffer(url.start());
+            let end = self.terminal().visible_to_buffer(url.end());
+            args.push(self.terminal().bounds_to_string(start, end));
 
             start_daemon(launcher.program(), &args);
         }
     }
+    
+    fn highlighted_url(&self) -> Option<&Url> {
+        self.display.highlighted_url.as_ref()
+    }
 
     fn change_font_size(&mut self, delta: f32) {
-        tm_cl!(self.tab_manager, terminal, {
-            *self.font_size = max(*self.font_size + delta, Size::new(FONT_SIZE_STEP));
-            let font = self.config.ui_config.font.clone().with_size(*self.font_size);
-            self.display_update_pending.set_font(font);
-            terminal.dirty = true;
-        });
+        *self.font_size = max(*self.font_size + delta, Size::new(FONT_SIZE_STEP));
+        let font = self.config.ui_config.font.clone().with_size(*self.font_size);
+        self.display_update_pending.set_font(font);
+        self.dirty = true;
     }
 
     fn reset_font_size(&mut self) {
-        tm_cl!(self.tab_manager, terminal, {
-            *self.font_size = self.config.ui_config.font.size();
-            self.display_update_pending.set_font(self.config.ui_config.font.clone());
-            terminal.dirty = true;
-        });
+        *self.font_size = self.config.ui_config.font.size();
+        self.display_update_pending.set_font(self.config.ui_config.font.clone());
+        self.dirty = true;
     }
 
     #[inline]
@@ -615,20 +537,14 @@ impl<'a> input::ActionContext<EventProxy> for ActionContext<'a> {
         if !self.message_buffer.is_empty() {
             self.display_update_pending.dirty = true;
             self.message_buffer.pop();
+            self.dirty = true;
         }
     }
 
     #[inline]
     fn start_search(&mut self, direction: Direction) {
-        tm_cl!(self.tab_manager, terminal, {
-            self.start_search_wt(direction, &mut terminal);
-        });
-    }
-
-    #[inline]
-    fn start_search_wt(&mut self, direction: Direction, terminal: &mut Term<EventProxy>) {
-        let num_lines = terminal.screen_lines();
-        let num_cols = terminal.cols();
+        let num_lines = self.terminal().screen_lines();
+        let num_cols = self.terminal().cols();
 
         // Only create new history entry if the previous regex wasn't empty.
         if self.search_state.history.get(0).map_or(true, |regex| !regex.is_empty()) {
@@ -641,8 +557,8 @@ impl<'a> input::ActionContext<EventProxy> for ActionContext<'a> {
         self.search_state.focused_match = None;
 
         // Store original search position as origin and reset location.
-        if terminal.mode().contains(TermMode::VI) {
-            self.search_state.origin = terminal.vi_mode_cursor.point;
+        if self.terminal().mode().contains(TermMode::VI) {
+            self.search_state.origin = self.terminal().vi_mode_cursor.point;
             self.search_state.display_offset_delta = 0;
         } else {
             match direction {
@@ -654,53 +570,45 @@ impl<'a> input::ActionContext<EventProxy> for ActionContext<'a> {
         }
 
         self.display_update_pending.dirty = true;
-        terminal.dirty = true;
+        self.dirty = true;
     }
-
+    
     #[inline]
     fn confirm_search(&mut self) {
-        tm_cl!(self.tab_manager, terminal, {
-            self.confirm_search_wt(&mut terminal);
-        });
-    }
-
-    #[inline]
-    fn confirm_search_wt(&mut self, terminal: &mut Term<EventProxy>) {
-        if !terminal.mode().contains(TermMode::VI) {
+        // Just cancel search when not in vi mode.
+        if !self.terminal().mode().contains(TermMode::VI) {
             self.cancel_search();
             return;
         }
 
+        // Force unlimited search if the previous one was interrupted.
         if self.scheduler.scheduled(TimerId::DelayedSearch) {
-            self.goto_match(None, terminal);
+            self.goto_match(None);
         }
 
-        self.exit_search_wt(terminal);
+        self.exit_search();
     }
 
     #[inline]
     fn cancel_search(&mut self) {
-        self.set_grep_mode_to(false);
-        tm_cl!(self.tab_manager, terminal, {
-            terminal.cancel_search();
+        if self.terminal().mode().contains(TermMode::VI) {
+            // Recover pre-search state in vi mode.
+            self.search_reset_state();
+        } else if let Some(focused_match) = &self.search_state.focused_match {
+            // Create a selection for the focused match.
+            let start = self.terminal().grid().clamp_buffer_to_visible(*focused_match.start());
+            let end = self.terminal().grid().clamp_buffer_to_visible(*focused_match.end());
+            self.start_selection(SelectionType::Simple, start, Side::Left);
+            self.update_selection(end, Side::Right);
+        }
 
-            if terminal.mode().contains(TermMode::VI) {
-                // Recover pre-search state in vi mode.
-                self.search_reset_state_wt(terminal);
-            } else if let Some(focused_match) = &self.search_state.focused_match {
-                // Create a selection for the focused match.
-                let start = terminal.grid().clamp_buffer_to_visible(*focused_match.start());
-                let end = terminal.grid().clamp_buffer_to_visible(*focused_match.end());
-                self.start_selection_wt(SelectionType::Simple, start, Side::Left, terminal);
-                self.update_selection_wt(end, Side::Right, &mut terminal);
-            }
+        self.search_state.dfas = None;
 
-            self.exit_search_wt(terminal);
-        });
+        self.exit_search();
     }
 
     #[inline]
-    fn search_input_wt(&mut self, c: char, terminal: &mut Term<EventProxy>) {
+    fn search_input(&mut self, c: char) {
         match self.search_state.history_index {
             Some(0) => (),
             // When currently in history, replace active regex with history on change.
@@ -723,19 +631,21 @@ impl<'a> input::ActionContext<EventProxy> for ActionContext<'a> {
             _ => return,
         }
 
-        if !terminal.mode().contains(TermMode::VI) {
+        if !self.terminal().mode().contains(TermMode::VI) {
             // Clear selection so we do not obstruct any matches.
-            terminal.selection = None;
+            self.terminal_mut().selection = None;
         }
 
-        self.update_search_wt(terminal);
+        self.update_search();
     }
 
     #[inline]
-    fn search_input(&mut self, c: char) {
-        tm_cl!(self.tab_manager, terminal, {
-            self.search_input_wt(c, terminal);
-        });
+    fn search_pop_word(&mut self) {
+        if let Some(regex) = self.search_state.regex_mut() {
+            *regex = regex.trim_end().to_owned();
+            regex.truncate(regex.rfind(' ').map(|i| i + 1).unwrap_or(0));
+            self.update_search();
+        }
     }
 
     /// Go to the previous regex in the search history.
@@ -749,17 +659,6 @@ impl<'a> input::ActionContext<EventProxy> for ActionContext<'a> {
 
         *index += 1;
         self.update_search();
-    }
-
-    fn set_grep_mode_to(&mut self, to_val: bool) {
-        self.search_state.grep_mode = to_val;
-    }
-
-    fn toggle_grep_mode(&mut self) {
-        tm_cl!(self.tab_manager, terminal, {
-            terminal.dirty = true;
-        });
-        self.search_state.grep_mode = !self.search_state.grep_mode;
     }
 
     /// Go to the previous regex in the search history.
@@ -780,33 +679,23 @@ impl<'a> input::ActionContext<EventProxy> for ActionContext<'a> {
         if let Some(focused_match) = &self.search_state.focused_match {
             let new_origin = match direction {
                 Direction::Right => {
-                    tm_cl!(self.tab_manager, terminal, {
-                        let r = focused_match.end().add_absolute(terminal, Boundary::Wrap, 1);
-                    });
-                    r
+                    focused_match.end().add_absolute(self.terminal, Boundary::Wrap, 1)
                 },
                 Direction::Left => {
-                    tm_cl!(self.tab_manager, terminal, {
-                        let r = focused_match.start().sub_absolute(terminal, Boundary::Wrap, 1);
-                    });
-                    r
+                    focused_match.start().sub_absolute(self.terminal, Boundary::Wrap, 1)
                 },
             };
 
-            tm_cl!(self.tab_manager, terminal, {
-                terminal.scroll_to_point(new_origin);
+            self.terminal.scroll_to_point(new_origin);
 
-                let origin_relative = terminal.grid().clamp_buffer_to_visible(new_origin);
-                self.search_state.origin = origin_relative;
-                self.search_state.display_offset_delta = 0;
-            });
+            let origin_relative = self.terminal.grid().clamp_buffer_to_visible(new_origin);
+            self.search_state.origin = origin_relative;
+            self.search_state.display_offset_delta = 0;
         }
 
         // Search for the next match using the supplied direction.
         let search_direction = mem::replace(&mut self.search_state.direction, direction);
-        tm_cl!(self.tab_manager, terminal, {
-            self.goto_match(None, terminal);
-        });
+        self.goto_match(None);
         self.search_state.direction = search_direction;
 
         // If we found a match, we set the search origin right in front of it to make sure that
@@ -823,19 +712,40 @@ impl<'a> input::ActionContext<EventProxy> for ActionContext<'a> {
             Direction::Left => *focused_match.end(),
         };
 
-        tm_cl!(self.tab_manager, terminal, {
-            // Store the search origin with display offset by checking how far we need to scroll to
-            // it.
-            let old_display_offset = terminal.grid().display_offset() as isize;
-            terminal.scroll_to_point(new_origin);
-            let new_display_offset = terminal.grid().display_offset() as isize;
-            self.search_state.display_offset_delta = new_display_offset - old_display_offset;
+        // Store the search origin with display offset by checking how far we need to scroll to it.
+        let old_display_offset = self.terminal.grid().display_offset() as isize;
+        self.terminal.scroll_to_point(new_origin);
+        let new_display_offset = self.terminal.grid().display_offset() as isize;
+        self.search_state.display_offset_delta = new_display_offset - old_display_offset;
 
-            // Store origin and scroll back to the match.
-            let origin_relative = terminal.grid().clamp_buffer_to_visible(new_origin);
-            terminal.scroll_display(Scroll::Delta(-self.search_state.display_offset_delta));
-            self.search_state.origin = origin_relative;
-        });
+        // Store origin and scroll back to the match.
+        let origin_relative = self.terminal.grid().clamp_buffer_to_visible(new_origin);
+        self.terminal.scroll_display(Scroll::Delta(-self.search_state.display_offset_delta));
+        self.search_state.origin = origin_relative;
+    }
+
+
+    /// Find the next search match.
+    fn search_next(
+        &mut self,
+        origin: Point<usize>,
+        direction: Direction,
+        side: Side,
+    ) -> Option<Match> {
+        self.search_state
+            .dfas
+            .as_ref()
+            .and_then(|dfas| self.terminal.search_next(dfas, origin, direction, side, None))
+    }
+
+    #[inline]
+    fn search_direction(&self) -> Direction {
+        self.search_state.direction
+    }
+
+    #[inline]
+    fn search_active(&self) -> bool {
+        self.search_state.history_index.is_some()
     }
 
     /// Handle keyboard typing start.
@@ -850,27 +760,27 @@ impl<'a> input::ActionContext<EventProxy> for ActionContext<'a> {
         let blink_interval = self.config.cursor.blink_interval();
         if let Some(timer) = self.scheduler.get_mut(TimerId::BlinkCursor) {
             timer.deadline = Instant::now() + Duration::from_millis(blink_interval);
-            *self.cursor_hidden = false;
-
-            tm_cl!(self.tab_manager, terminal, {
-                terminal.dirty = true;
-            });
+            self.display.cursor_hidden = false;
+            self.dirty = true;
         }
 
         // Hide mouse cursor.
         if self.config.ui_config.mouse.hide_when_typing {
-            self.window.set_mouse_visible(false);
+            self.display.window.set_mouse_visible(false);
         }
     }
 
+    /// Toggle the vi mode status.
     #[inline]
-    fn search_direction(&self) -> Direction {
-        self.search_state.direction
-    }
+    fn toggle_vi_mode(&mut self) {
+        if !self.terminal.mode().contains(TermMode::VI) {
+            self.clear_selection();
+        }
 
-    #[inline]
-    fn search_active(&self) -> bool {
-        self.search_state.history_index.is_some()
+        self.cancel_search();
+        self.terminal_mut().toggle_vi_mode();
+
+        self.dirty = true;
     }
 
     fn message(&self) -> Option<&Message> {
@@ -886,7 +796,7 @@ impl<'a> input::ActionContext<EventProxy> for ActionContext<'a> {
     }
 
     fn urls(&self) -> &Urls {
-        self.urls
+        &self.display.urls
     }
 
     fn clipboard_mut(&mut self) -> &mut Clipboard {
@@ -900,12 +810,6 @@ impl<'a> input::ActionContext<EventProxy> for ActionContext<'a> {
 
 impl<'a> ActionContext<'a> {
     fn update_search(&mut self) {
-        tm_cl!(self.tab_manager, terminal, {
-            self.update_search_wt(terminal);
-        });
-    }
-
-    fn update_search_wt(&mut self, terminal: &mut Term<EventProxy>) {
         let regex = match self.search_state.regex() {
             Some(regex) => regex,
             None => return,
@@ -913,97 +817,91 @@ impl<'a> ActionContext<'a> {
 
         // Hide cursor while typing into the search bar.
         if self.config.ui_config.mouse.hide_when_typing {
-            self.window.set_mouse_visible(false);
+            self.display.window.set_mouse_visible(false);
         }
 
         if regex.is_empty() {
             // Stop search if there's nothing to search for.
-            self.search_reset_state_wt(terminal);
-            terminal.cancel_search();
+            self.search_reset_state();
+            self.search_state.dfas = None;
         } else {
-            // Create terminal search from the new regex string.
-            terminal.start_search(&regex);
+            // Create search dfas for the new regex string.
+            self.search_state.dfas = RegexSearch::new(&regex).ok();
 
             // Update search highlighting.
-            self.goto_match(MAX_SEARCH_WHILE_TYPING, terminal);
+            self.goto_match(MAX_SEARCH_WHILE_TYPING);
         }
 
-        terminal.dirty = true;
+        self.dirty = true;
     }
 
-    fn search_reset_state_wt(&mut self, terminal: &mut Term<EventProxy>) {
+
+    /// Reset terminal to the state before search was started.
+    fn search_reset_state(&mut self) {
         // Unschedule pending timers.
         self.scheduler.unschedule(TimerId::DelayedSearch);
 
         // The viewport reset logic is only needed for vi mode, since without it our origin is
         // always at the current display offset instead of at the vi cursor position which we need
         // to recover to.
-
-        if !terminal.mode().contains(TermMode::VI) {
+        if !self.terminal.mode().contains(TermMode::VI) {
             return;
         }
 
         // Reset display offset.
-
-        terminal.scroll_display(Scroll::Delta(self.search_state.display_offset_delta));
-
+        self.terminal.scroll_display(Scroll::Delta(self.search_state.display_offset_delta));
         self.search_state.display_offset_delta = 0;
 
         // Clear focused match.
         self.search_state.focused_match = None;
 
         // Reset vi mode cursor.
-
         let mut origin = self.search_state.origin;
-        origin.line = min(origin.line, terminal.screen_lines() - 1);
-        origin.col = min(origin.col, terminal.cols() - 1);
-        terminal.vi_mode_cursor.point = origin;
+        origin.line = min(origin.line, self.terminal.screen_lines() - 1);
+        origin.column = min(origin.column, self.terminal.cols() - 1);
+        self.terminal.vi_mode_cursor.point = origin;
+
+        self.dirty = true;
     }
 
-    /// Reset terminal to the state before search was started.
-    fn search_reset_state(&mut self) {
-        tm_cl!(self.tab_manager, terminal, {
-            self.search_reset_state_wt(terminal);
-        });
-    }
 
     /// Jump to the first regex match from the search origin.
-    fn goto_match(&mut self, mut limit: Option<usize>, terminal: &mut Term<EventProxy>) {
-        self.set_grep_mode_to(false);
-        terminal.scroll_to_point(Point::new(0,Column(0)));
-        if self.search_state.history_index.is_none() {
-            return;
-        }
+    fn goto_match(&mut self, mut limit: Option<usize>) {
+        let dfas = match &self.search_state.dfas {
+            Some(dfas) => dfas,
+            None => return,
+        };
+
         // Limit search only when enough lines are available to run into the limit.
-        limit = limit.filter(|&limit| limit <= terminal.total_lines());
+        limit = limit.filter(|&limit| limit <= self.terminal().total_lines());
 
         // Jump to the next match.
         let direction = self.search_state.direction;
-        let ab_orig = self.absolute_origin(terminal);
-        match terminal.search_next(ab_orig, direction, Side::Left, limit) {
+        let origin = self.absolute_origin();
+        match self.terminal().search_next(dfas, origin, direction, Side::Left, limit) {
             Some(regex_match) => {
-                let old_offset = terminal.grid().display_offset() as isize;
+                let old_offset = self.terminal().grid().display_offset() as isize;
 
-                if terminal.mode().contains(TermMode::VI) {
+                if self.terminal().mode().contains(TermMode::VI) {
                     // Move vi cursor to the start of the match.
-                    terminal.vi_goto_point(*regex_match.start());
+                    self.terminal_mut().vi_goto_point(*regex_match.start());
                 } else {
                     // Select the match when vi mode is not active.
-                    terminal.scroll_to_point(*regex_match.start());
+                    self.terminal_mut().scroll_to_point(*regex_match.start());
                 }
 
                 // Update the focused match.
                 self.search_state.focused_match = Some(regex_match);
 
                 // Store number of lines the viewport had to be moved.
-                let display_offset = terminal.grid().display_offset();
+                let display_offset = self.terminal().grid().display_offset();
                 self.search_state.display_offset_delta += old_offset - display_offset as isize;
 
                 // Since we found a result, we require no delayed re-search.
                 self.scheduler.unschedule(TimerId::DelayedSearch);
             },
             // Reset viewport only when we know there is no match, to prevent unnecessary jumping.
-            None if limit.is_none() => self.search_reset_state_wt(terminal),
+            None if limit.is_none() => self.search_reset_state(),
             None => {
                 // Schedule delayed search if we ran into our search limit.
                 if !self.scheduler.scheduled(TimerId::DelayedSearch) {
@@ -1020,27 +918,22 @@ impl<'a> ActionContext<'a> {
             },
         }
 
-        terminal.dirty = true;
+        self.dirty = true;
     }
 
     /// Cleanup the search state.
     fn exit_search(&mut self) {
-        tm_cl!(self.tab_manager, terminal, {
-            self.exit_search_wt(&mut terminal);
-        });
-    }
-
-    fn exit_search_wt(&mut self, terminal: &mut Term<EventProxy>) {
-        if terminal.history_size() != 0
-            && terminal.grid().display_offset() == 0
-            && terminal.screen_lines() > terminal.vi_mode_cursor.point.line + 1
+        // Move vi cursor down if resize will pull content from history.
+        if self.terminal().history_size() != 0
+            && self.terminal().grid().display_offset() == 0
+            && self.terminal().screen_lines() > self.terminal().vi_mode_cursor.point.line + 1
         {
-            terminal.vi_mode_cursor.point.line += 1;
+            self.terminal_mut().vi_mode_cursor.point.line += 1;
         }
 
         self.display_update_pending.dirty = true;
         self.search_state.history_index = None;
-        terminal.dirty = true;
+        self.dirty = true;
 
         // Clear focused match.
         self.search_state.focused_match = None;
@@ -1051,11 +944,11 @@ impl<'a> ActionContext<'a> {
     /// This takes the relative motion of the viewport since the start of the search into account.
     /// So while the absolute point of the origin might have changed since new content was printed,
     /// this will still return the correct absolute position.
-    fn absolute_origin(&self, terminal: &mut Term<EventProxy>) -> Point<usize> {
+    fn absolute_origin(&self) -> Point<usize> {
         let mut relative_origin = self.search_state.origin;
-        relative_origin.line = min(relative_origin.line, terminal.screen_lines() - 1);
-        relative_origin.col = min(relative_origin.col, terminal.cols() - 1);
-        let mut origin = terminal.visible_to_buffer(relative_origin);
+        relative_origin.line = min(relative_origin.line, self.terminal().screen_lines() - 1);
+        relative_origin.column = min(relative_origin.column, self.terminal().cols() - 1);
+        let mut origin = self.terminal.visible_to_buffer(relative_origin);
         origin.line = (origin.line as isize + self.search_state.display_offset_delta) as usize;
 
         return origin;
@@ -1063,25 +956,21 @@ impl<'a> ActionContext<'a> {
 
     /// Update the cursor blinking state.
     fn update_cursor_blinking(&mut self) {
-        let mut tab_manager_guard = self.tab_manager.write().unwrap();
-        let mut tab_manager = &mut *tab_manager_guard;
-        let mut tab = &*tab_manager.selected_tab_arc();
-        let mut terminal_guard = tab.terminal.lock();
-        let mut terminal = &mut *terminal_guard;
+        
 
         // Get config cursor style.
         let mut cursor_style = self.config.cursor.style;
-        if terminal.mode().contains(TermMode::VI) {
+        if self.terminal().mode().contains(TermMode::VI) {
             cursor_style = self.config.cursor.vi_mode_style.unwrap_or(cursor_style);
         };
 
         // Check terminal cursor style.
-        let terminal_blinking = terminal.cursor_style().blinking;
+        let terminal_blinking = self.terminal().cursor_style().blinking;
         let blinking = cursor_style.blinking_override().unwrap_or(terminal_blinking);
 
         // Update cursor blinking state.
         self.scheduler.unschedule(TimerId::BlinkCursor);
-        if blinking && terminal.is_focused {
+        if blinking && self.terminal().is_focused {
             self.scheduler.schedule(
                 GlutinEvent::UserEvent(Event::BlinkCursor),
                 Duration::from_millis(self.config.cursor.blink_interval()),
@@ -1089,11 +978,9 @@ impl<'a> ActionContext<'a> {
                 TimerId::BlinkCursor,
             )
         } else {
-            *self.cursor_hidden = false;
-            terminal.dirty = true;
+            self.display.cursor_hidden = false;
+            self.dirty = true;
         }
-        drop(terminal_guard);
-        drop(tab_manager_guard);
     }
 }
 
@@ -1154,7 +1041,7 @@ impl Default for Mouse {
 /// Stores some state from received events and dispatches actions when they are
 /// triggered.
 pub struct Processor {
-    tab_manager: Arc<RwLock<TabManager>>,
+    tab_manager: Arc<TabManager>,
     mouse: Mouse,
     received_count: usize,
     suppress_chars: bool,
@@ -1174,7 +1061,7 @@ impl Processor {
     ///
     /// Takes a writer which is expected to be hooked up to the write end of a PTY.
     pub fn new(
-        tab_manager: Arc<RwLock<TabManager>>,
+        tab_manager: Arc<TabManager>,
         message_buffer: MessageBuffer,
         config: Config,
         display: Display,
@@ -1348,7 +1235,7 @@ impl Processor {
             // futures::executor::block_on(future);
         // });
 
-        event_loop.run_return(move |event, event_loop, control_flow| {
+        event_loop.run_return(move |event, event_loop, control_flow| {            
             if self.config.ui_config.debug.print_events {
                 info!("glutin event: {:?}", event);
             }
@@ -1401,46 +1288,45 @@ impl Processor {
             let mut display_update_pending = DisplayUpdate::default();
             let old_is_searching = self.search_state.history_index.is_some();
 
+            let tab_manager_arc = self.tab_manager.clone();
+            let tab = tab_manager_arc.selected_tab_arc();
+            let terminal_clone = tab.terminal.clone();
+            
+            
+            let mut terminal_guard = terminal_clone.lock();
+            let mut terminal = &mut *terminal_guard;
+
             let context = ActionContext {
                 tab_manager: self.tab_manager.clone(),
+                terminal,
                 mouse: &mut self.mouse,
                 clipboard: &mut self.clipboard,
-                size_info: &mut self.display.size_info,
                 received_count: &mut self.received_count,
                 suppress_chars: &mut self.suppress_chars,
                 modifiers: &mut self.modifiers,
                 message_buffer: &mut self.message_buffer,
                 display_update_pending: &mut display_update_pending,
-                window: &mut self.display.window,
+                display: &mut self.display,
                 font_size: &mut self.font_size,
                 config: &mut self.config,
-                urls: &self.display.urls,
                 scheduler: &mut scheduler,
                 search_state: &mut self.search_state,
                 cli_options: &self.cli_options,
-                cursor_hidden: &mut self.display.cursor_hidden,
+                dirty: false,
                 event_loop,
             };
-            let mut processor = input::Processor::new(context, &self.display.highlighted_url);
+            let mut processor = input::Processor::new(context);
 
+            
             for event in self.event_queue.drain(..) {
-                let tab_manager_event_processing_clone = tab_manager_mutex_clone.clone();
-                Processor::handle_event(event, &mut processor, tab_manager_event_processing_clone);
+                Processor::handle_event(event, &mut processor);
             }
 
-            let tm = tab_manager_mutex_clone.clone();
-            let mut tab_manager_guard = tm.read().unwrap();
-            let tab_manager: &TabManager = & *tab_manager_guard;
-            let tab = &*tab_manager.selected_tab_arc();
-            let terminal_mutex = tab.terminal.clone();
-            let mut terminal_guard = terminal_mutex.lock();
-            let mut terminal = &mut *terminal_guard;
+            let dirty = processor.ctx.dirty;
 
-            let terminal_dirty = terminal.dirty;
-            let terminal_visual_bell_completed = terminal.visual_bell.completed();
-
+            drop(processor);
             drop(terminal_guard);
-            drop(tab_manager_guard);
+        
 
             // Process DisplayUpdate events.
             if display_update_pending.dirty {
@@ -1453,31 +1339,24 @@ impl Processor {
                 return;
             }
 
-            // if last + ld < Instant::now() {
-            if terminal_dirty {
-                // last = Instant::now();
-                // terminal.dirty = false;
-
+            if dirty {
                 // Request immediate re-draw if visual bell animation is not finished yet.
-                if !terminal_visual_bell_completed {
+                if !self.display.visual_bell.completed() {
                     let event: Event = TerminalEvent::Wakeup.into();
                     self.event_queue.push(event.into());
 
                     *control_flow = ControlFlow::Poll;
                 }
 
-                let tm = tab_manager_mutex_clone.clone();
-                let mut tab_manager_guard = tm.read().unwrap();
-                let tab_manager: &TabManager = & *tab_manager_guard;
-                let tab = &*tab_manager.selected_tab_arc();
-                let terminal_mutex = tab.terminal.clone();
+                let tab_manager = tab_manager_mutex_clone.clone();
+                let terminal_mutex = tab_manager.selected_tab_arc().terminal.clone();
                 let mut terminal_guard = terminal_mutex.lock();
                 let mut terminal = &mut *terminal_guard;
-                terminal.dirty = false;
+                
                 
                 // Redraw screen.
                 self.display.draw(
-                    tab_manager,
+                    tab_manager_mutex_clone.clone(),
                     terminal,
                     &self.message_buffer,
                     &self.config,
@@ -1486,7 +1365,7 @@ impl Processor {
                     &self.search_state,
                 );
 
-                drop(tab_manager_guard);
+                
                 drop(terminal_guard);
             }
 
@@ -1505,10 +1384,9 @@ impl Processor {
     /// Doesn't take self mutably due to borrow checking.
     fn handle_event(
         event: GlutinEvent<'_, Event>,
-        processor: &mut input::Processor<'_, EventProxy, ActionContext<'_>>,
-        // terminal: &mut Term<EventProxy>
-        tab_manager_mutex: Arc<RwLock<TabManager>>,
-    ) {
+        processor: &mut input::Processor<EventProxy, ActionContext<'_>>,
+    )
+    {
         match event {
             GlutinEvent::UserEvent(event) => match event {
                 Event::TestEvent => {
@@ -1524,53 +1402,37 @@ impl Processor {
                     // Resize to event's dimensions, since no resize event is emitted on Wayland.
                     display_update_pending.set_dimensions(PhysicalSize::new(width, height));
 
-                    processor.ctx.window.dpr = scale_factor;
-
-                    tm_cl!(tab_manager_mutex, terminal, {
-                        terminal.dirty = true;
-                    });
+                    processor.ctx.window_mut().dpr = scale_factor;
+                    processor.ctx.dirty = true;
                 },
                 Event::Message(message) => {
                     processor.ctx.message_buffer.push(message);
                     processor.ctx.display_update_pending.dirty = true;
-
-                    tm_cl!(tab_manager_mutex, terminal, {
-                        terminal.dirty = true;
-                    });
+                    processor.ctx.dirty = true;
                 },
-                Event::SearchNext => {
-                    tm_cl!(tab_manager_mutex, terminal, {
-                        processor.ctx.goto_match(None, &mut terminal);
-                    });
-                },
+                Event::SearchNext => processor.ctx.goto_match(None),
                 Event::ConfigReload(path) => Self::reload_config(&path, processor),
                 Event::Scroll(scroll) => processor.ctx.scroll(scroll),
                 Event::BlinkCursor => {
-                    *processor.ctx.cursor_hidden ^= true;
-
-                    tm_cl!(tab_manager_mutex, terminal, {
-                        terminal.dirty = true;
-                    });
+                    processor.ctx.display.cursor_hidden ^= true;
+                    processor.ctx.dirty = true;
                 },
                 Event::TerminalEvent(event) => match event {
                     TerminalEvent::Title(title) => {
                         let ui_config = &processor.ctx.config.ui_config;
                         if ui_config.window.dynamic_title {
-                            processor.ctx.window.set_title(&title);
+                            processor.ctx.window_mut().set_title(&title);
                         }
                     },
                     TerminalEvent::ResetTitle => {
                         let ui_config = &processor.ctx.config.ui_config;
                         if ui_config.window.dynamic_title {
-                            processor.ctx.window.set_title(&ui_config.window.title);
+                            processor.ctx.display.window.set_title(&ui_config.window.title);
                         }
                     },
-                    TerminalEvent::Wakeup => {
-                    },
+                    TerminalEvent::Wakeup => processor.ctx.dirty = true,
                     TerminalEvent::Close(idx) => {
-                        let tm = tab_manager_mutex.clone();
-                        let mut tab_manager_guard = tm.read().unwrap();
-                        let tab_manager: &TabManager = & *tab_manager_guard;
+                        let tab_manager = processor.ctx.tab_manager();
 
                         // Note: no longer attempting to tie the tab_idx to the tab being closed
                         tab_manager.remove_selected_tab();
@@ -1579,20 +1441,23 @@ impl Processor {
                         let mut tab = &*tab_manager.selected_tab_arc();
                         let mut terminal_guard = tab.terminal.lock();
                         let mut terminal = &mut *terminal_guard;
-                        terminal.dirty = true;
+                        processor.ctx.dirty = true;
                         drop(terminal_guard);
-
-                        drop(tab_manager_guard);
                     },
                     TerminalEvent::Bell => {
-                        let bell_command = processor.ctx.config.bell().command.as_ref();
-                        let _ = bell_command.map(|cmd| start_daemon(cmd.program(), cmd.args()));
+                        // Set window urgency.
+                        if processor.ctx.terminal.mode().contains(TermMode::URGENCY_HINTS) {
+                            let focused = processor.ctx.terminal.is_focused;
+                            processor.ctx.window_mut().set_urgent(!focused);
+                        }
 
-                        tm_cl!(tab_manager_mutex, terminal, {
-                            if terminal.mode().contains(TermMode::URGENCY_HINTS) {
-                                processor.ctx.window.set_urgent(!terminal.is_focused);
-                            }
-                        });
+                        // Ring visual bell.
+                        processor.ctx.display.visual_bell.ring();
+
+                        // Execute bell command.
+                        if let Some(bell_command) = &processor.ctx.config.ui_config.bell.command {
+                            start_daemon(bell_command.program(), bell_command.args());
+                        }
                     },
                     TerminalEvent::ClipboardStore(clipboard_type, content) => {
                         processor.ctx.clipboard.store(clipboard_type, content);
@@ -1601,24 +1466,26 @@ impl Processor {
                         let text = format(processor.ctx.clipboard.load(clipboard_type).as_str());
                         processor.ctx.write_to_pty(text.into_bytes());
                     },
+                    TerminalEvent::ColorRequest(index, format) => {
+                        let text = format(processor.ctx.display.colors[index]);
+                        processor.ctx.write_to_pty(text.into_bytes());
+                    },
                     TerminalEvent::MouseCursorDirty => processor.reset_mouse_cursor(),
-                    TerminalEvent::Exit => (),
+                    TerminalEvent::Exit => {
+                        
+                    },
                     TerminalEvent::CursorBlinkingChange(_) => {
                         processor.ctx.update_cursor_blinking();
                     },
                 },
             },
-            GlutinEvent::RedrawRequested(_) => {
-                tm_cl!(tab_manager_mutex, terminal, {
-                    terminal.dirty = true;
-                });
-            },
+            GlutinEvent::RedrawRequested(_) => processor.ctx.dirty = true,
             GlutinEvent::WindowEvent { event, window_id, .. } => {
                 match event {
                     WindowEvent::CloseRequested => {
-                        tm_cl!(tab_manager_mutex, terminal, {
-                            terminal.exit();
-                        });
+                        (*processor.ctx.tab_manager).event_proxy.send_event(crate::event::Event::TerminalEvent(
+                            alacritty_terminal::event::Event::Exit
+                        ));
                     },
                     WindowEvent::Resized(size) => {
                         // Minimizing the window sends a Resize event with zero width and
@@ -1630,48 +1497,38 @@ impl Processor {
                         }
 
                         processor.ctx.display_update_pending.set_dimensions(size);
-
-                        tm_cl!(tab_manager_mutex, terminal, {
-                            terminal.dirty = true;
-                        });
+                        processor.ctx.dirty = true;
                     },
                     WindowEvent::KeyboardInput { input, is_synthetic: false, .. } => {
                         // let modifiers = input.modifiers;
                         processor.key_input(input);
                     },
-                    WindowEvent::ReceivedCharacter(c) => processor.received_char(c),
-                    WindowEvent::MouseInput { state, button, .. } => {
-                        processor.ctx.window.set_mouse_visible(true);
-                        processor.mouse_input(state, button);
-
-                        tm_cl!(tab_manager_mutex, terminal, {
-                            terminal.dirty = true;
-                        });
-                    },
                     WindowEvent::ModifiersChanged(modifiers) => {
                         processor.modifiers_input(modifiers)
                     },
+                    WindowEvent::ReceivedCharacter(c) => processor.received_char(c),
+                    WindowEvent::MouseInput { state, button, .. } => {
+                        processor.ctx.window_mut().set_mouse_visible(true);
+                        processor.mouse_input(state, button);
+                        processor.ctx.dirty = true;
+                    },
                     WindowEvent::CursorMoved { position, .. } => {
-                        processor.ctx.window.set_mouse_visible(true);
+                        processor.ctx.window_mut().set_mouse_visible(true);
                         processor.mouse_moved(position);
                     },
                     WindowEvent::MouseWheel { delta, phase, .. } => {
-                        processor.ctx.window.set_mouse_visible(true);
+                        processor.ctx.window_mut().set_mouse_visible(true);
                         processor.mouse_wheel_input(delta, phase);
                     },
                     WindowEvent::Focused(is_focused) => {
-                        if window_id == processor.ctx.window.window_id() {
-                            // processor.ctx.terminal.is_focused = is_focused;
-
-                            tm_cl!(tab_manager_mutex, terminal, {
-                                terminal.is_focused = is_focused;
-                                terminal.dirty = true;
-                            });
+                        if window_id == processor.ctx.window().window_id() {
+                            processor.ctx.terminal.is_focused = is_focused;
+                            processor.ctx.dirty = true;
 
                             if is_focused {
-                                processor.ctx.window.set_urgent(false);
+                                processor.ctx.window_mut().set_urgent(false);
                             } else {
-                                processor.ctx.window.set_mouse_visible(true);
+                                processor.ctx.window_mut().set_mouse_visible(true);
                             }
 
                             processor.ctx.update_cursor_blinking();
@@ -1685,10 +1542,8 @@ impl Processor {
                     WindowEvent::CursorLeft { .. } => {
                         processor.ctx.mouse.inside_text_area = false;
 
-                        if processor.highlighted_url.is_some() {
-                            tm_cl!(tab_manager_mutex, terminal, {
-                                terminal.dirty = true;
-                            });
+                        if processor.ctx.highlighted_url().is_some() {
+                            processor.ctx.dirty = true;
                         }
                     },
                     WindowEvent::KeyboardInput { is_synthetic: true, .. }
@@ -1737,10 +1592,9 @@ impl Processor {
         }
     }
 
-    fn reload_config(
-        path: &PathBuf,
-        processor: &mut input::Processor<'_, EventProxy, ActionContext<'_>>,
-    ) {
+    /// Reload the configuration files from disk.
+    fn reload_config(path: &Path, processor: &mut input::Processor<EventProxy, ActionContext<'_>>)
+    {
         if !processor.ctx.message_buffer.is_empty() {
             processor.ctx.message_buffer.remove_target(LOG_TARGET_CONFIG);
             processor.ctx.display_update_pending.dirty = true;
@@ -1751,10 +1605,8 @@ impl Processor {
             Err(_) => return,
         };
 
-        // processor.ctx.terminal.update_config(&config);
-        processor.ctx.with_terminal(|terminal: &mut Term<EventProxy>| {
-            terminal.update_config(&config);
-        });
+        processor.ctx.display.update_config(&config);
+        processor.ctx.terminal.update_config(&config);
 
         // Reload cursor if its thickness has changed.
         if (processor.ctx.config.cursor.thickness() - config.cursor.thickness()).abs()
@@ -1785,12 +1637,12 @@ impl Processor {
         if !config.ui_config.window.dynamic_title
             || processor.ctx.config.ui_config.window.title != config.ui_config.window.title
         {
-            processor.ctx.window.set_title(&config.ui_config.window.title);
+            processor.ctx.window_mut().set_title(&config.ui_config.window.title);
         }
 
         #[cfg(all(feature = "wayland", not(any(target_os = "macos", windows))))]
         if processor.ctx.event_loop.is_wayland() {
-            processor.ctx.window.set_wayland_theme(&config.colors);
+            processor.ctx.window_mut().set_wayland_theme(&config.ui_config.colors);
         }
 
         // Set subpixel anti-aliasing.
@@ -1799,14 +1651,14 @@ impl Processor {
 
         // Disable shadows for transparent windows on macOS.
         #[cfg(target_os = "macos")]
-        processor.ctx.window.set_has_shadow(config.ui_config.background_opacity() >= 1.0);
+        processor.ctx.window_mut().set_has_shadow(config.ui_config.background_opacity() >= 1.0);
 
         *processor.ctx.config = config;
 
         // Update cursor blinking.
         processor.ctx.update_cursor_blinking();
 
-        processor.ctx.with_terminal(|terminal: &mut Term<EventProxy>| terminal.dirty = true);
+        processor.ctx.dirty = true;
     }
 
     /// Submit the pending changes to the `Display`.
@@ -1816,9 +1668,7 @@ impl Processor {
         display_update_pending: DisplayUpdate,
     ) {
         // Compute cursor positions before resize.
-        let tm = self.tab_manager.clone();
-        let mut tab_manager_guard = tm.read().unwrap();
-        let tab_manager: &TabManager = & *tab_manager_guard;
+        let tab_manager = self.tab_manager.clone();
         let tab = &*tab_manager.selected_tab_arc();
         let terminal_mutex = tab.terminal.clone();
         let mut terminal_guard = terminal_mutex.lock();
@@ -1832,7 +1682,6 @@ impl Processor {
             self.search_state.direction == Direction::Left
         };
 
-        drop(tab_manager_guard);
         drop(terminal_guard);
 
         self.display.handle_update(
@@ -1842,9 +1691,7 @@ impl Processor {
             display_update_pending,
         );
 
-        let tm = self.tab_manager.clone();
-        let mut tab_manager_guard = tm.read().unwrap();
-        let tab_manager: &TabManager = & *tab_manager_guard;
+        let tab_manager = self.tab_manager.clone();
         let tab = &*tab_manager.selected_tab_arc();
         let terminal_mutex = tab.terminal.clone();
         let mut terminal_guard = terminal_mutex.lock();
@@ -1860,7 +1707,6 @@ impl Processor {
             }
         }
 
-        drop(tab_manager_guard);
         drop(terminal_guard);
     }
 

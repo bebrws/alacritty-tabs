@@ -3,7 +3,6 @@
 #![warn(rust_2018_idioms, future_incompatible)]
 #![deny(clippy::all, clippy::if_not_else, clippy::enum_glob_use, clippy::wrong_pub_self_convention)]
 #![cfg_attr(feature = "cargo-clippy", deny(warnings))]
-#![cfg_attr(all(test, feature = "bench"), feature(test))]
 // With the default subsystem, 'console', windows creates an additional console
 // window for the program.
 // This is silently ignored on non-windows systems.
@@ -42,7 +41,6 @@ mod child_pty;
 mod cli;
 mod clipboard;
 mod config;
-mod cursor;
 mod daemon;
 mod display;
 mod event;
@@ -51,7 +49,6 @@ mod logging;
 #[cfg(target_os = "macos")]
 mod macos;
 mod message_bar;
-mod meter;
 #[cfg(windows)]
 mod panic;
 mod passwd;
@@ -59,10 +56,6 @@ mod renderer;
 mod scheduler;
 mod tab_manager;
 mod url;
-mod window;
-
-#[cfg(all(feature = "wayland", not(any(target_os = "macos", windows))))]
-mod wayland_theme;
 
 mod gl {
     #![allow(clippy::all)]
@@ -152,51 +145,31 @@ fn run(
 
     let tab_manager = TabManager::new(event_proxy.clone(), config.clone());
 
-    let tab_manager_mutex = Arc::new(RwLock::new(tab_manager));
+    let tab_manager_mutex = Arc::new(tab_manager);
 
     // Create a display.
     //
-    let tab_manager_mutex_display_clone = tab_manager_mutex.clone();
-    let display = Display::new(&config, &window_event_loop, tab_manager_mutex_display_clone)?;
+    let tab_manage_display_clone = tab_manager_mutex.clone();
+    let display = Display::new(&config, &window_event_loop, tab_manage_display_clone)?;
     info!(
         "PTY dimensions: {:?} x {:?}",
         display.size_info.screen_lines(),
         display.size_info.cols()
     );
 
-    let tab_manager_mutex_main_clone = tab_manager_mutex.clone();
-    let mut tab_manager_main_guard = tab_manager_mutex_main_clone.write().unwrap();
-    let tab_manager = &mut *tab_manager_main_guard;
-    tab_manager.set_size(display.size_info.clone());
+    let tab_manager_main_clone = tab_manager_mutex.clone();
+    tab_manager_main_clone.set_size(display.size_info.clone());
 
-    let idx = tab_manager.new_tab().unwrap();
-    tab_manager.select_tab(idx);
-
-    drop(tab_manager_main_guard);
+    let idx = tab_manager_main_clone.new_tab().unwrap();
+    tab_manager_main_clone.select_tab(idx);
 
     let event_proxy_clone = event_proxy.clone();
-    let tab_manager_draw_mutex = tab_manager_mutex.clone();
     std::thread::spawn(move || loop {
         std::thread::sleep(Duration::from_millis(100));
 
-        // let mut tab_manager_main_guard = tab_manager_draw_mutex.write().unwrap();
-        // let tab_manager = &mut *tab_manager_main_guard;
-       
-        // let tab = &*tab_manager.selected_tab_arc();
-
-        // let terminal_arc = tab.terminal.clone();
-        // let mut terminal_guard = terminal_arc.lock();
-        // let mut terminal = &mut *terminal_guard;
-
-        // if terminal.dirty {
-            event_proxy_clone.send_event(crate::event::Event::TerminalEvent(
-                alacritty_terminal::event::Event::Wakeup,
-            ));
-        // }
-    
-        // drop(terminal_guard);
-        // drop(tab_manager_main_guard);
-
+        event_proxy_clone.send_event(crate::event::Event::TerminalEvent(
+            alacritty_terminal::event::Event::Wakeup,
+        ));
     });
 
     // Create a config monitor when config was loaded from path.

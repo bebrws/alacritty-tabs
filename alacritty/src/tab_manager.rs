@@ -84,6 +84,7 @@ pub enum Msg {
 }
 
 pub struct TabManager {
+    pub to_exit: RwLock<bool>,
     pub selected_tab: RwLock<Option<usize>>,
     pub tabs: RwLock<Vec<Tab>>,
     pub size: RwLock<Option<SizeInfo>>,
@@ -93,8 +94,15 @@ pub struct TabManager {
 }
 
 impl TabManager {
+    pub fn set_to_exit(&self) {
+        let mut to_exit_guard = self.to_exit.write().unwrap();
+        let mut to_exit_mut = &mut *to_exit_guard;
+        *to_exit_mut = true;
+        drop(to_exit_guard);
+    }
     pub fn new(event_proxy: crate::event::EventProxy, config: Config) -> TabManager {
         let mut tm = Self {
+            to_exit: RwLock::new(false),
             selected_tab: RwLock::new(None),
             tabs: RwLock::new(Vec::new()),
             size: RwLock::new(None),
@@ -131,7 +139,7 @@ impl TabManager {
         }
     }
 
-    pub fn set_size(&mut self, size: SizeInfo) {
+    pub fn set_size(&self, size: SizeInfo) {
         let mut size_guard = self.size.write().unwrap();
         let mut size_mut  = &mut *size_guard;
         let size_clone = size.clone();
@@ -215,7 +223,7 @@ impl TabManager {
                                 processor.advance(terminal, *byte, &mut unlocked_pty)
                             });
 
-                            terminal.dirty = true;
+                            // terminal.dirty = true;
                             
                             drop(pty_guard);
                             drop(terminal_guard);
@@ -457,7 +465,7 @@ impl Tab {
         let tab_terminal = self.terminal.clone();
         let mut terminal_guard = tab_terminal.lock();
         let terminal = &mut *terminal_guard;
-        terminal.dirty = true;
+        // terminal.dirty = true;
         drop(terminal_guard);
 
         let mut pty_guard = self.pty.lock();
