@@ -1,4 +1,4 @@
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+#[cfg(all(feature = "wayland", not(any(target_os = "macos", windows))))]
 use std::ffi::c_void;
 
 use log::{debug, warn};

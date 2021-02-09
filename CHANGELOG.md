@@ -7,6 +7,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## 0.8.0-dev
 
+### Packaging
+
+- Updated shell completions
+
 ### Added
 
 - IME composition preview not appearing on Windows
@@ -14,10 +18,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Fixed
 
 - Crash due to assertion failure on 32-bit architectures
+- Segmentation fault on shutdown with Wayland
+- Incorrect estimated DPR with Wayland
 
-### Packaging
+### Removed
 
-- Updated shell completions
+- Config field `visual_bell`, you should use `bell` instead
 
 ## 0.7.1
 

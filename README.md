@@ -1,20 +1,21 @@
+# This branch is using RwLock
+
+Notice how much slower this is!
+
+# Original Readme.md:
+
+
 <p align="center">
     <img width="200" alt="Alacritty Logo" src="https://raw.githubusercontent.com/alacritty/alacritty/master/extra/logo/compat/alacritty-term%2Bscanlines.png">
 </p>
 
-<h1 align="center">Alacritty fork with tabs - A fast, cross-platform, OpenGL terminal emulator</h1>
+<h1 align="center">Alacritty - A fast, cross-platform, OpenGL terminal emulator</h1>
 
 <p align="center">
   <img width="600"
        alt="Alacritty - A fast, cross-platform, OpenGL terminal emulator"
        src="https://user-images.githubusercontent.com/8886672/103264352-5ab0d500-49a2-11eb-8961-02f7da66c855.png">
 </p>
-
-# Differences from the main fork of Alacritty
-
-  * Tab Manager - Alacritty supports tabs. Logo + t and Logo + Shift + Left/Right Bracket to change tabs
-  * Logo Click a word to write to terminal
-  * Alt Select to copy selection
 
 ## About
 

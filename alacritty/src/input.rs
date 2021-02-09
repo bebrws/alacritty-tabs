@@ -69,7 +69,6 @@ pub struct Processor<T: EventListener, A: ActionContext<T>> {
 }
 
 pub trait ActionContext<T: EventListener> {
-
     fn tab_manager(&mut self) -> Arc<TabManager>;
     fn find_word<U: EventListener>(&self, point_p: Point, side: Side, terminal: &Term<U>) -> String;
     fn write_to_pty<B: Into<Cow<'static, [u8]>>>(&mut self, _data: B);
@@ -113,6 +112,10 @@ pub trait ActionContext<T: EventListener> {
     fn search_pop_word(&mut self) {}
     fn search_history_previous(&mut self) {}
     fn search_history_next(&mut self) {}
+
+    fn set_grep_mode(&mut self, new_mode: bool) {}
+
+    fn get_grep_mode(&self) -> bool { false }
     fn search_next(
         &mut self,
         origin: Point<usize>,
@@ -287,7 +290,7 @@ impl<T: EventListener> Execute<T> for Action {
                 ctx.advance_search_origin(ctx.search_direction());
             },
             Action::SearchAction(SearchAction::GrepMode) => {
-                // ctx.toggle_grep_mode();
+                ctx.set_grep_mode(!ctx.get_grep_mode());
             },
             Action::SearchAction(SearchAction::SearchFocusPrevious) => {
                 let direction = ctx.search_direction().opposite();
