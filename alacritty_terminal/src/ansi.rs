@@ -302,6 +302,8 @@ pub trait Handler {
     /// later be 'invoked' by `set_active_charset`.
     fn configure_charset(&mut self, _: CharsetIndex, _: StandardCharset) {}
 
+    fn set_current_working_directory(&mut self, _: String) { }
+
     /// Set an indexed color value.
     fn set_color(&mut self, _: usize, _: Rgb) {}
 
@@ -844,6 +846,15 @@ where
                             return;
                         }
                     }
+                }
+                unhandled(params);
+            },
+
+            // Set current working directory
+            b"7" => {
+                if params.len() == 2  {
+                    let current_working_directory = std::str::from_utf8(&params[1]).unwrap();
+                    self.handler.set_current_working_directory(current_working_directory.to_string());
                 }
                 unhandled(params);
             },

@@ -106,10 +106,36 @@ impl<T: Clone + EventListener + Send + 'static> TabManager<T> {
     }
 
     pub fn new_tab(&self) -> Result<usize> {
+
+        let current_working_directory_option: Option<String>;
+        if self.selected_tab_idx().is_some() {
+            let tab_idx= self.selected_tab_idx().unwrap();
+            loop {
+                if let Ok(tabs_guard) = self.tabs.try_read() {
+                    let tabs = & *tabs_guard;
+                    let tab = tabs.get(tab_idx).unwrap();
+                    let terminal = tab.terminal.clone();
+                    let mut terminal_guard = terminal.lock();
+                    let terminal = &mut *terminal_guard;
+                    if terminal.current_working_directory.is_some() {
+                        let current_working_directory_string = terminal.current_working_directory.clone().unwrap();
+                        current_working_directory_option = Some(current_working_directory_string);
+                    } else {
+                        current_working_directory_option = None;
+                    }
+                    drop(terminal_guard);
+                    break;
+                }
+            }
+        } else {
+            current_working_directory_option = None
+        }
+        
         let tab_idx = match self.selected_tab_idx() {
             Some(idx) => idx + 1,
             None => 0,
         };
+
         info!("Creating new tab {}\n", tab_idx);
         info!("Default shell {}\n", DEFAULT_SHELL);
 
@@ -129,6 +155,7 @@ impl<T: Clone + EventListener + Send + 'static> TabManager<T> {
             sz,
             self.config.clone(),
             self.event_proxy.clone(),
+            current_working_directory_option
         );
 
         let pty_arc = new_tab.pty.clone();
@@ -437,11 +464,12 @@ impl<T: Clone + EventListener> Tab<T> {
         size: SizeInfo,
         config: Config,
         event_proxy: T,
+        current_working_directory: Option<String>,
     ) -> Tab<T> {
         let terminal = Term::new(&config, size, event_proxy);
         let terminal = Arc::new(FairMutex::new(terminal));
 
-        let pty = Arc::new(FairMutex::new(crate::child_pty::new(config, size).unwrap()));
+        let pty = Arc::new(FairMutex::new(crate::child_pty::new(config, size, current_working_directory).unwrap()));
 
         Tab { pty, terminal }
     }

@@ -216,6 +216,7 @@ impl SizeInfo {
 }
 
 pub struct Term<T> {
+    pub current_working_directory: Option<String>,
     /// Terminal focus controlling the cursor shape.
     pub is_focused: bool,
 
@@ -302,6 +303,7 @@ impl<T> Term<T> {
         let scroll_region = Line(0)..grid.screen_lines();
 
         Term {
+            current_working_directory: None,
             grid,
             inactive_grid: alt,
             active_charset: Default::default(),
@@ -1311,6 +1313,10 @@ impl<T: EventListener> Handler for Term<T> {
             .selection
             .take()
             .filter(|s| !s.intersects_range(cursor_buffer_line..=cursor_buffer_line));
+    }
+
+    fn set_current_working_directory(&mut self, current_working_directory: String) {
+        self.current_working_directory = Some(current_working_directory);
     }
 
     /// Set the indexed color value.

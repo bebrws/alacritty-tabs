@@ -119,8 +119,8 @@ impl<'a> ToWinsize for &'a SizeInfo {
 }
 
 
-pub fn new(config: Config<crate::config::ui_config::UIConfig>, size: SizeInfo) -> Option<Pty> {
-    Some(Pty::new(config, size).unwrap())
+pub fn new(config: Config<crate::config::ui_config::UIConfig>, size: SizeInfo, current_working_directory: Option<String>) -> Option<Pty> {
+    Some(Pty::new(config, size, current_working_directory).unwrap())
 }
 
 pub struct Pty {
@@ -180,7 +180,7 @@ impl Pty {
         &mut self.file
     }
     /// Spawn a process in a new pty.
-    pub fn new(config: Config<crate::config::ui_config::UIConfig>, size: SizeInfo) -> Result<Pty, ()>
+    pub fn new(config: Config<crate::config::ui_config::UIConfig>, size: SizeInfo, current_working_directory: Option<String>) -> Result<Pty, ()>
     {
 
         let new_winsize = winsize {
@@ -222,16 +222,16 @@ impl Pty {
         };
 
         unsafe {
-            Command::new(&command)
-                .args(args.to_vec())
-                .stdin(Stdio::from_raw_fd(pty.slave))
-                .stdout(Stdio::from_raw_fd(pty.slave))
-                .stderr(Stdio::from_raw_fd(pty.slave))
-                .env("LOGNAME", pw.name)
-                .env("USER", pw.name)
-                .env("HOME", pw.dir)
-                .env("SHELL", crate::tab_manager::DEFAULT_SHELL)
-                .pre_exec(move || {
+            let mut builder = Command::new(&command);
+            builder.args(args.to_vec());
+            builder.stdin(Stdio::from_raw_fd(pty.slave));
+            builder.stdout(Stdio::from_raw_fd(pty.slave));
+            builder.stderr(Stdio::from_raw_fd(pty.slave));
+            builder.env("LOGNAME", pw.name);
+            builder.env("USER", pw.name);
+            builder.env("HOME", pw.dir);
+            builder.env("SHELL", crate::tab_manager::DEFAULT_SHELL);
+            builder.pre_exec(move || {
 
                     let pid = setsid().map_err(|e| format!("Error occured with setsid: {}", e)).unwrap();
                     if pid.as_raw() == -1 {
@@ -251,8 +251,13 @@ impl Pty {
                     libc::signal(libc::SIGALRM, libc::SIG_DFL);
 
                     Ok(())
-                })
-                .spawn()
+                });
+
+                if current_working_directory.is_some() {
+                    builder.current_dir(current_working_directory.unwrap());
+                }
+                
+                builder.spawn()
                 .map_err(|err| {
                     error!("Error creating Pty: {}", err);
                 })
