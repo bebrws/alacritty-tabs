@@ -2,7 +2,7 @@
 
 use std::cmp::{max, min};
 use std::ops::{Index, IndexMut, Range};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::{io, mem, ptr, str};
 
 use bitflags::bitflags;
@@ -278,6 +278,7 @@ pub struct Term<T> {
     /// Information about cell dimensions.
     cell_width: usize,
     cell_height: usize,
+    current_working_directory_update: Arc<RwLock<Option<String>>>
 }
 
 impl<T> Term<T> {
@@ -290,7 +291,7 @@ impl<T> Term<T> {
         self.event_proxy.send_event(Event::MouseCursorDirty);
     }
 
-    pub fn new<C>(config: &Config<C>, size: SizeInfo, event_proxy: T) -> Term<T> {
+    pub fn new<C>(config: &Config<C>, size: SizeInfo, event_proxy: T, current_working_directory_update: Arc<RwLock<Option<String>>>) -> Term<T> {
         let num_cols = size.cols;
         let num_lines = size.screen_lines;
 
@@ -303,6 +304,7 @@ impl<T> Term<T> {
         let scroll_region = Line(0)..grid.screen_lines();
 
         Term {
+            current_working_directory_update,
             current_working_directory: None,
             grid,
             inactive_grid: alt,
@@ -1316,7 +1318,15 @@ impl<T: EventListener> Handler for Term<T> {
     }
 
     fn set_current_working_directory(&mut self, current_working_directory: String) {
+        let cwd_clone = current_working_directory.clone();
         self.current_working_directory = Some(current_working_directory);
+        loop {
+            if let Ok(mut current_working_directory_update_guard) = self.current_working_directory_update.try_write() {
+                let current_working_directory_update = &mut *current_working_directory_update_guard;
+                *current_working_directory_update = Some(cwd_clone);
+                break;
+            }
+        }
     }
 
     /// Set the indexed color value.
@@ -1917,7 +1927,7 @@ pub mod test {
 
         // Create terminal with the appropriate dimensions.
         let size = SizeInfo::new(num_cols as f32, lines.len() as f32, 1., 1., 0., 0., false);
-        let mut term = Term::new(&Config::<()>::default(), size, ());
+        let mut term = Term::new(&Config::<()>::default(), size, (), Arc::new(RwLock::new(None)));
 
         // Fill terminal with content.
         for (line, text) in lines.iter().rev().enumerate() {

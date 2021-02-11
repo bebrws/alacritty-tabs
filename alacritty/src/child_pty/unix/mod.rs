@@ -254,7 +254,18 @@ impl Pty {
                 });
 
                 if current_working_directory.is_some() {
-                    builder.current_dir(current_working_directory.unwrap());
+                    if let Ok(hostame_ostring) = hostname::get() {
+                        if let Some(hostname_str) = hostame_ostring.to_str() {
+                            let hostname = hostname_str.to_string();
+                            let prefix_of_file_path_with_hostname = format!("file://{}", hostname);
+                            let cwd_str_with_hostname = current_working_directory.unwrap().clone();
+                            let cwd_str_2 = cwd_str_with_hostname.strip_prefix(&prefix_of_file_path_with_hostname);
+                            let cwd_str = cwd_str_2.unwrap().to_string();
+                            if !cwd_str.contains("file://") && std::fs::metadata(&cwd_str).is_ok(){
+                                builder.current_dir(cwd_str);
+                            }
+                        }
+                    }
                 }
                 
                 builder.spawn()

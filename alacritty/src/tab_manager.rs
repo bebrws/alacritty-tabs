@@ -34,6 +34,7 @@ use crate::config::Config;
 const TAB_TITLE_WIDTH: usize = 8;
 
 pub struct TabManager<T> {
+    pub current_working_directory_update: Arc<RwLock<Option<String>>>,
     pub to_exit: RwLock<bool>,
     pub selected_tab: RwLock<Option<usize>>,
     pub tabs: RwLock<Vec<Tab<T>>>,
@@ -47,6 +48,7 @@ pub struct TabManager<T> {
 impl<T: Clone + EventListener + Send + 'static> TabManager<T> {
     pub fn new(event_proxy: T, config: Config) -> TabManager<T> {
         Self {
+            current_working_directory_update: Arc::new(RwLock::new(None)),
             to_exit: RwLock::new(false),
             selected_tab: RwLock::new(None),
             tabs: RwLock::new(Vec::new()),
@@ -106,29 +108,19 @@ impl<T: Clone + EventListener + Send + 'static> TabManager<T> {
     }
 
     pub fn new_tab(&self) -> Result<usize> {
-
         let current_working_directory_option: Option<String>;
-        if self.selected_tab_idx().is_some() {
-            let tab_idx= self.selected_tab_idx().unwrap();
-            loop {
-                if let Ok(tabs_guard) = self.tabs.try_read() {
-                    let tabs = & *tabs_guard;
-                    let tab = tabs.get(tab_idx).unwrap();
-                    let terminal = tab.terminal.clone();
-                    let mut terminal_guard = terminal.lock();
-                    let terminal = &mut *terminal_guard;
-                    if terminal.current_working_directory.is_some() {
-                        let current_working_directory_string = terminal.current_working_directory.clone().unwrap();
-                        current_working_directory_option = Some(current_working_directory_string);
-                    } else {
-                        current_working_directory_option = None;
-                    }
-                    drop(terminal_guard);
-                    break;
-                }
+
+        loop {
+            if let Ok(current_working_directory_update_guard) = self.current_working_directory_update.try_read() {
+                let current_working_directory_update = &*current_working_directory_update_guard;
+                let current_working_directory_update_clone = current_working_directory_update.clone();
+                current_working_directory_option = if current_working_directory_update.is_some() {
+                    Some(current_working_directory_update_clone.unwrap().clone())
+                } else {
+                    None
+                };
+                break;
             }
-        } else {
-            current_working_directory_option = None
         }
         
         let tab_idx = match self.selected_tab_idx() {
@@ -155,7 +147,8 @@ impl<T: Clone + EventListener + Send + 'static> TabManager<T> {
             sz,
             self.config.clone(),
             self.event_proxy.clone(),
-            current_working_directory_option
+            current_working_directory_option,
+            self.current_working_directory_update.clone()
         );
 
         let pty_arc = new_tab.pty.clone();
@@ -465,8 +458,9 @@ impl<T: Clone + EventListener> Tab<T> {
         config: Config,
         event_proxy: T,
         current_working_directory: Option<String>,
+        current_working_directory_update: Arc<RwLock<Option<String>>>
     ) -> Tab<T> {
-        let terminal = Term::new(&config, size, event_proxy);
+        let terminal = Term::new(&config, size, event_proxy, current_working_directory_update);
         let terminal = Arc::new(FairMutex::new(terminal));
 
         let pty = Arc::new(FairMutex::new(crate::child_pty::new(config, size, current_working_directory).unwrap()));
