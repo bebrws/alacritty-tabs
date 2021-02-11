@@ -139,9 +139,40 @@ impl<T: Clone + EventListener + Send + 'static> TabManager<T> {
 
         let terminal_arc = new_tab.terminal.clone();
 
+        let mut sel_tab_idx: usize = 0;
+        if let Ok(sel_tab_idx_guard) = self.selected_tab.read() {
+            let sel_tab_idx_option = & *sel_tab_idx_guard;
+            sel_tab_idx = match sel_tab_idx_option {
+                Some(tab_idx) => {
+                    *tab_idx
+                },
+                None => {
+                    // *sel_tab_idx_option = Some(0);
+                    0
+                }
+            }
+        }
+
         loop {
             if let Ok(mut tabs_write_guard) = self.tabs.try_write() {
-                (*tabs_write_guard).push(new_tab);
+                let tabs = &mut *tabs_write_guard;
+                let tabs_len = tabs.len();
+                
+                if tabs_len > 1 {
+                    let one_less = tabs_len - 1;
+                    if sel_tab_idx != one_less {
+                        let mut new_tabs: Vec<Tab<T>> = Vec::new();
+
+                        new_tabs.append(&mut tabs[0..sel_tab_idx+1].to_vec());
+                        new_tabs.append(&mut vec![new_tab]);
+                        new_tabs.append(&mut tabs[(sel_tab_idx+1)..tabs_len].to_vec());
+                        *tabs = new_tabs;
+                    } else {
+                        (*tabs_write_guard).push(new_tab);
+                    }
+                } else {
+                    (*tabs_write_guard).push(new_tab);
+                }
                 break;
             }
         }
@@ -221,11 +252,17 @@ impl<T: Clone + EventListener + Send + 'static> TabManager<T> {
                 },
             }
         } else {
-            let next_idx = self.next_tab_idx().unwrap();
-            if next_idx >= self.num_tabs() {
-                self.set_selected_tab(self.num_tabs() - 1);
+            let cur_sel_tab_idx = match self.selected_tab_idx() {
+                Some(idx) => idx,
+                None => 0
+            };
+
+            let tabs_len = self.tabs_len();
+            if cur_sel_tab_idx < tabs_len - 1 {
+                // Don't move the selected tab
             } else {
-                self.set_selected_tab(next_idx);
+                let new_tab_idx = if tabs_len > 1 { cur_sel_tab_idx - 1 } else { 0 };
+                self.set_selected_tab(new_tab_idx);
             }
         }
     }
@@ -236,6 +273,15 @@ impl<T: Clone + EventListener + Send + 'static> TabManager<T> {
 
     pub fn get_selected_tab_terminal(&self) -> Arc<FairMutex<Term<T>>> {
         self.selected_tab_arc().terminal.clone()
+    }
+
+    pub fn tabs_len(&self) -> usize {
+        loop {
+            if let Ok(all_cur_tabs_guard) = self.tabs.try_read() {
+                let all_cur_tabs = &*all_cur_tabs_guard;
+                return all_cur_tabs.len();
+            }
+        }
     }
 
     pub fn update_tab_titles(&self) {
@@ -254,16 +300,10 @@ impl<T: Clone + EventListener + Send + 'static> TabManager<T> {
                         }
                     }
                 } else {
-                    let selected_tab_idx: usize;
-                    loop {
-                        if let Ok(tab_idx_guard) = self.selected_tab.try_read() {
-                            let tab_idx_option = *tab_idx_guard;
-                            if let Some(idx) = tab_idx_option {
-                                selected_tab_idx = idx;
-                                break;
-                            }
-                        }
-                    }
+                    let selected_tab_idx = match self.selected_tab_idx() {
+                        Some(idx) => idx,
+                        None => 0
+                    };
 
                     loop {
                         if let Ok(mut tab_titles_guard) = self.tab_titles.try_write() {
