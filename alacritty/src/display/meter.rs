@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 const NUM_SAMPLES: usize = 10;
 
 /// The meter.
-#[derive(Default)]
+#[derive(Default, Debug, Clone)]
 pub struct Meter {
     /// Track last 60 timestamps.
     times: [f64; NUM_SAMPLES],

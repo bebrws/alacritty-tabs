@@ -1,7 +1,5 @@
 //! The display subsystem including window management, font rasterization, and
 //! GPU drawing.
-
-use regex::Regex;
 use std::cmp::min;
 use std::convert::TryFrom;
 use std::f64;
@@ -10,7 +8,7 @@ use std::fmt::{self, Formatter};
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 use glutin::dpi::{PhysicalPosition, PhysicalSize};
 use glutin::event::ModifiersState;
@@ -19,21 +17,22 @@ use glutin::event_loop::EventLoop;
 use glutin::platform::unix::EventLoopWindowTargetExtUnix;
 use glutin::window::CursorIcon;
 use log::{debug, info};
-use parking_lot::MutexGuard;
 use unicode_width::UnicodeWidthChar;
 #[cfg(all(feature = "wayland", not(any(target_os = "macos", windows))))]
 use wayland_client::{Display as WaylandDisplay, EventQueue};
 
 use crossfont::{self, Rasterize, Rasterizer};
 
+// use alacritty_terminal::ansi::Handler;
 use alacritty_terminal::ansi::NamedColor;
-use alacritty_terminal::event::{EventListener, OnResize};
+use alacritty_terminal::event::EventListener;
 use alacritty_terminal::grid::Dimensions as _;
 use alacritty_terminal::index::{Column, Direction, Line, Point};
 use alacritty_terminal::selection::Selection;
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::{SizeInfo, Term, TermMode, MIN_COLUMNS, MIN_SCREEN_LINES};
 
+use crate::event::EventProxy;
 use crate::config::font::Font;
 use crate::config::window::Dimensions;
 #[cfg(not(windows))]
@@ -204,11 +203,11 @@ pub struct Display {
     renderer: QuadRenderer,
     glyph_cache: GlyphCache,
     meter: Meter,
-    tab_manager: Arc<TabManager>,
+    tab_manager: Arc<TabManager<EventProxy>>,
 }
 
 impl Display {
-    pub fn new<E>(config: &Config, event_loop: &EventLoop<E>, tab_manager: Arc<TabManager>) -> Result<Display, Error> {
+    pub fn new<E>(config: &Config, event_loop: &EventLoop<E>, tab_manager: Arc<TabManager<EventProxy>>) -> Result<Display, Error> {
         #[cfg(any(not(feature = "x11"), target_os = "macos", windows))]
         let is_x11 = false;
         #[cfg(all(feature = "x11", not(any(target_os = "macos", windows))))]
@@ -478,9 +477,10 @@ impl Display {
     /// A reference to Term whose state is being drawn must be provided.
     ///
     /// This call may block if vsync is enabled.
+    #[allow(clippy::too_many_arguments)]
     pub fn draw<T: EventListener>(
         &mut self,
-        tab_manager: Arc<TabManager>,
+        tab_manager: Arc<TabManager<EventProxy>>,
         terminal: &mut Term<T>,
         message_buffer: &MessageBuffer,
         config: &Config,
@@ -489,7 +489,8 @@ impl Display {
         // Collect renderable content before the terminal is dropped.
         let mut content = RenderableContent::new(config, self, &terminal, search_state);
         let mut grid_cells = Vec::new();
-        
+
+        #[allow(clippy::while_let_on_iterator)]
         while let Some(cell) = content.next() {
             grid_cells.push(cell);
         }
@@ -506,7 +507,7 @@ impl Display {
         let vi_mode_cursor = if vi_mode { Some(terminal.vi_mode_cursor) } else { None };
 
         // Drop terminal as early as possible to free lock.
-        drop(terminal);
+        // drop(terminal);
 
         self.renderer.with_api(&config.ui_config, &size_info, |api| {
             api.clear(background_color);
@@ -534,8 +535,6 @@ impl Display {
 
                     // Update underline/strikeout.
                     lines.update(&cell);
-
-                    // cell.point.line += 1; // Leave the first line open for the tab list
 
                     // Draw the cell.
                     api.render_cell(cell, glyph_cache);
@@ -576,20 +575,24 @@ impl Display {
             rects.push(visual_bell_rect);
         }
 
-        let sel_tab = match tab_manager.selected_tab_idx() {
-            Some(idx) => idx,
-            None => 0,
-        };
+        let sel_tab = tab_manager.selected_tab_idx().unwrap_or(0);
 
         let glyph_cache = &mut self.glyph_cache;
 
-        let tab_min = 0;
-        let mut tab_max = tab_manager.num_tabs() - 1;
+        // let tab_min = 0;
+        let tab_max = tab_manager.num_tabs() - 1;
+        // let tab_buttons = (tab_min..=tab_max)
+        //     .map(|i| if i == sel_tab { format!("[*{:0>3}]", i) } else { format!("[{:0>3}]", i) })
+        //     .collect::<Vec<String>>()
+        //     .join(" ");
 
-        let tab_buttons = (tab_min..=tab_max)
-            .map(|i| if i == sel_tab { format!("[*{:0>3}]", i) } else { format!("[{:0>3}]", i) })
-            .collect::<Vec<String>>()
-            .join(" ");
+        let tab_buttons: String;
+        loop {
+            if let Ok(tab_titles) = tab_manager.tab_titles.try_read() {
+                tab_buttons = tab_titles.join(" ");
+                break;
+            }
+        }
 
         let tabs_string = format!("{} Tab: {} of {}", tab_buttons, sel_tab, tab_max + 1);
         let tab_string_len = tabs_string.len() + 2;
@@ -599,7 +602,7 @@ impl Display {
 
         let tab_string_location = if columns > tab_string_len { columns - tab_string_len } else { 0 };
 
-        let p: Point = Point::new(Line(0), Column(tab_string_location));
+        let p: Point<usize> = Point::new(0, Column(tab_string_location));
         self.renderer.with_api(&config.ui_config, &size_info, |mut api| {
             api.render_string(
                 glyph_cache,
@@ -645,20 +648,6 @@ impl Display {
             // Draw rectangles.
             self.renderer.draw_rects(&size_info, rects);
         }
-
-
-
-        // DRAW POPOVER WINDOW
-        if (false) {
-            let mut rects: Vec<RenderRect> = Vec::new();
-            let popover_rect =
-                RenderRect::new(0.0, 0.0, size_info.width(), size_info.height(), config.ui_config.colors.dim.as_ref().unwrap().black, 0.95);
-            rects.push(popover_rect);
-            self.renderer.draw_rects(&size_info, rects);
-        }
-
-
-
 
 
         self.draw_render_timer(config, &size_info);

@@ -25,12 +25,12 @@ use crate::cli::Options;
 pub use crate::config::bindings::{Action, Binding, BindingMode, Key, SearchAction, ViAction};
 #[cfg(test)]
 pub use crate::config::mouse::{ClickHandler, Mouse};
-use crate::config::ui_config::UiConfig;
+use crate::config::ui_config::UIConfig;
 
 /// Maximum number of depth for the configuration file imports.
 const IMPORT_RECURSION_LIMIT: usize = 5;
 
-pub type Config = TermConfig<UiConfig>;
+pub type Config = TermConfig<UIConfig>;
 
 /// Result from config loading.
 pub type Result<T> = std::result::Result<T, Error>;

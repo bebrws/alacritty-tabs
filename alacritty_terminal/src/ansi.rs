@@ -153,27 +153,29 @@ impl Processor {
 
     /// Process a new byte from the PTY.
     #[inline]
-    pub fn advance<H>(&mut self, handler: &mut H, byte: u8)
+    pub fn advance<H, W>(&mut self, handler: &mut H, byte: u8, writer: &mut W)
     where
         H: Handler,
+        W: std::io::Write,
     {
         if self.state.sync_state.timeout.is_none() {
-            let mut performer = Performer::new(&mut self.state, handler);
+            let mut performer = Performer::new(&mut self.state, handler, writer);
             self.parser.advance(&mut performer, byte);
         } else {
-            self.advance_sync(handler, byte);
+            self.advance_sync(handler, byte, writer);
         }
     }
 
     /// End a synchronized update.
-    pub fn stop_sync<H>(&mut self, handler: &mut H)
+    pub fn stop_sync<H, W>(&mut self, handler: &mut H, writer: &mut W)
     where
         H: Handler,
+        W: std::io::Write,
     {
         // Process all synchronized bytes.
         for i in 0..self.state.sync_state.buffer.len() {
             let byte = self.state.sync_state.buffer[i];
-            let mut performer = Performer::new(&mut self.state, handler);
+            let mut performer = Performer::new(&mut self.state, handler, writer);
             self.parser.advance(&mut performer, byte);
         }
 
@@ -196,15 +198,16 @@ impl Processor {
 
     /// Process a new byte during a synchronized update.
     #[cold]
-    fn advance_sync<H>(&mut self, handler: &mut H, byte: u8)
+    fn advance_sync<H, W>(&mut self, handler: &mut H, byte: u8, writer: &mut W)
     where
         H: Handler,
+        W: std::io::Write,
     {
         self.state.sync_state.buffer.push(byte);
 
         // Handle sync DCS escape sequences.
         match self.state.sync_state.pending_dcs {
-            Some(_) => self.advance_sync_dcs_end(handler, byte),
+            Some(_) => self.advance_sync_dcs_end(handler, byte, writer),
             None => self.advance_sync_dcs_start(),
         }
     }
@@ -225,9 +228,10 @@ impl Processor {
     }
 
     /// Parse the DCS termination sequence for synchronized updates.
-    fn advance_sync_dcs_end<H>(&mut self, handler: &mut H, byte: u8)
+    fn advance_sync_dcs_end<H, W>(&mut self, handler: &mut H, byte: u8, writer: &mut W)
     where
         H: Handler,
+        W: std::io::Write,
     {
         match byte {
             // Ignore DCS passthrough characters.
@@ -239,7 +243,7 @@ impl Processor {
                 Some(Dcs::SyncStart) => {
                     self.state.sync_state.timeout = Some(Instant::now() + SYNC_UPDATE_TIMEOUT);
                 },
-                Some(Dcs::SyncEnd) => self.stop_sync(handler),
+                Some(Dcs::SyncEnd) => self.stop_sync(handler, writer),
                 None => (),
             },
         }
@@ -250,16 +254,21 @@ impl Processor {
 ///
 /// Processor creates a Performer when running advance and passes the Performer
 /// to `vte::Parser`.
-struct Performer<'a, H: Handler> {
+struct Performer<'a, H: Handler, W: std::io::Write> {
     state: &'a mut ProcessorState,
     handler: &'a mut H,
+    writer: &'a mut W,
 }
 
-impl<'a, H: Handler + 'a> Performer<'a, H> {
+impl<'a, H: Handler + 'a, W: std::io::Write> Performer<'a, H, W> {
     /// Create a performer.
     #[inline]
-    pub fn new<'b>(state: &'b mut ProcessorState, handler: &'b mut H) -> Performer<'b, H> {
-        Performer { state, handler }
+    pub fn new<'b>(
+        state: &'b mut ProcessorState,
+        handler: &'b mut H,
+        writer: &'b mut W,
+    ) -> Performer<'b, H, W> {
+        Performer { state, handler, writer }
     }
 }
 
@@ -874,9 +883,10 @@ impl StandardCharset {
     }
 }
 
-impl<'a, H> vte::Perform for Performer<'a, H>
+impl<'a, H, W> vte::Perform for Performer<'a, H, W>
 where
     H: Handler + 'a,
+    W: std::io::Write + 'a,
 {
     #[inline]
     fn print(&mut self, c: char) {

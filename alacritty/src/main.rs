@@ -1,5 +1,5 @@
 //! Alacritty - The GPU Enhanced Terminal.
-
+#![feature(new_uninit)]
 #![warn(rust_2018_idioms, future_incompatible)]
 #![deny(clippy::all, clippy::if_not_else, clippy::enum_glob_use, clippy::wrong_pub_self_convention)]
 #![cfg_attr(feature = "cargo-clippy", deny(warnings))]
@@ -13,15 +13,24 @@
 compile_error!(r#"at least one of the "x11"/"wayland" features must be enabled"#);
 
 
-#[cfg(target_os = "macos")]
 use std::path::PathBuf;
 use std::{env, io};
 use std::error::Error;
 use std::fs;
 use std::io::Write;
-use std::sync::{Arc, RwLock};
-use std::time::{Duration, Instant};
+use std::sync::Arc;
 
+#[cfg(windows)]
+use std::sync::Mutex;
+
+use std::time::Duration;
+use std::panic;
+
+#[cfg(windows)]
+use std::mem::MaybeUninit;
+
+#[cfg(windows)]
+use glutin::event_loop::EventLoopProxy;
 
 use glutin::event_loop::EventLoop as GlutinEventLoop;
 use log::{error, info};
@@ -33,9 +42,6 @@ use alacritty_terminal::term::Term;
 
 
 use crate::tab_manager::TabManager;
-
-#[macro_use]
-mod macros;
 
 mod child_pty;
 mod cli;
@@ -50,12 +56,10 @@ mod logging;
 mod macos;
 mod message_bar;
 #[cfg(windows)]
-mod panic;
-mod passwd;
+mod tpanic;
 mod renderer;
 mod scheduler;
 mod tab_manager;
-mod url;
 
 mod gl {
     #![allow(clippy::all)]
@@ -71,10 +75,11 @@ use crate::event::{Event, EventProxy, Processor};
 use crate::macos::locale;
 use crate::message_bar::MessageBuffer;
 
+
 fn main() {
 
     #[cfg(windows)]
-    panic::attach_handler();
+    tpanic::attach_handler();
 
     // When linked with the windows subsystem windows won't automatically attach
     // to the console of the parent process, so we do it explicitly. This fails
@@ -89,6 +94,14 @@ fn main() {
 
     // Setup glutin event loop.
     let window_event_loop = GlutinEventLoop::<Event>::with_user_event();
+
+
+    #[cfg(windows)]
+    let mut event_loop_mutex_box = MaybeUninit::<Mutex<EventLoopProxy<Event>>>::uninit();
+    #[cfg(windows)]
+    unsafe { event_loop_mutex_box.as_mut_ptr().write(Mutex::new(window_event_loop.create_proxy())); }
+    #[cfg(windows)]
+    crate::child_pty::windows::EVENT_LOOP_PROXY.store(Arc::new(Box::new(event_loop_mutex_box)));
 
     // Initialize the logger as soon as possible as to capture output from other subsystems.
     let log_file = logging::initialize(&options, window_event_loop.create_proxy())
@@ -149,8 +162,7 @@ fn run(
 
     // Create a display.
     //
-    let tab_manage_display_clone = tab_manager_mutex.clone();
-    let display = Display::new(&config, &window_event_loop, tab_manage_display_clone)?;
+    let display = Display::new(&config, &window_event_loop, tab_manager_mutex.clone())?;
     info!(
         "PTY dimensions: {:?} x {:?}",
         display.size_info.screen_lines(),
@@ -158,10 +170,13 @@ fn run(
     );
 
     let tab_manager_main_clone = tab_manager_mutex.clone();
-    tab_manager_main_clone.set_size(display.size_info.clone());
+    tab_manager_main_clone.set_size(display.size_info);
 
-    let idx = tab_manager_main_clone.new_tab().unwrap();
-    tab_manager_main_clone.select_tab(idx);
+    if let Ok(idx) = tab_manager_main_clone.new_tab() {
+        tab_manager_main_clone.select_tab(idx);
+    } else {
+        panic!("Error: Unable to create and select the initial tab!");
+    }
 
     let event_proxy_clone = event_proxy.clone();
     std::thread::spawn(move || loop {
@@ -184,7 +199,7 @@ fn run(
     let message_buffer = MessageBuffer::new();
 
     // Event processor.
-    let tab_manager_processor_mutex_clone = tab_manager_mutex.clone();
+    let tab_manager_processor_mutex_clone = tab_manager_mutex;
     let mut processor =
         Processor::new(tab_manager_processor_mutex_clone, message_buffer, config, display, options);
 

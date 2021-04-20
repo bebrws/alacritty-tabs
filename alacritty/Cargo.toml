@@ -20,9 +20,11 @@ path = "../alacritty_config_derive"
 version = "0.1.0"
 
 [dependencies]
+once_cell = "1.5.2"
+arc-swap = "1.2.0"
+pad = "0.1.6"
 copypasta = { version = "0.7.0", default-features = false }# tokio = { version = "1.0.2",  features = ["full"] }
 url = "2.2.0"
-# deno_core = "0.76.0"
 serde_json = "1.0.62"
 regex = "1.4.3"
 nix = "0.19.1"
@@ -70,6 +72,9 @@ wayland-client = { version = "0.28.0", features = ["dlopen"], optional = true }
 
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3.7", features = ["impl-default", "wincon"]}
+handle = "1.0.0"
+miow = "0.3"
+mio-anonymous-pipes = "0.1.0"
 
 [target.'cfg(windows)'.build-dependencies]
 embed-resource = "1.3"

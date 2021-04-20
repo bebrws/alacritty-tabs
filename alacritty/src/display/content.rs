@@ -15,7 +15,7 @@ use alacritty_terminal::term::{
     RenderableContent as TerminalContent, RenderableCursor as TerminalCursor, Term, TermMode,
 };
 
-use crate::config::ui_config::UiConfig;
+use crate::config::ui_config::UIConfig;
 use crate::display::color::{List, DIM_FACTOR};
 use crate::display::hint::HintState;
 use crate::display::{self, Display, MAX_SEARCH_LINES};
@@ -33,14 +33,14 @@ pub struct RenderableContent<'a> {
     cursor: Option<RenderableCursor>,
     search: Regex<'a>,
     hint: Hint<'a>,
-    config: &'a Config<UiConfig>,
+    config: &'a Config<UIConfig>,
     colors: &'a List,
     focused_match: Option<&'a Match>,
 }
 
 impl<'a> RenderableContent<'a> {
     pub fn new<T: EventListener>(
-        config: &'a Config<UiConfig>,
+        config: &'a Config<UIConfig>,
         display: &'a mut Display,
         term: &'a Term<T>,
         search_state: &'a SearchState,

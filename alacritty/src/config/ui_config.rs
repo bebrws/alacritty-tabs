@@ -26,8 +26,8 @@ use crate::config::window::WindowConfig;
 const URL_REGEX: &str = "(mailto:|gemini:|gopher:|https:|http:|news:|file:|git:|ssh:|ftp:)\
                          [^\u{0000}-\u{001F}\u{007F}-\u{009F}<>\" {-}\\^⟨⟩`]+";
 
-#[derive(ConfigDeserialize, Clone, Debug, PartialEq)]
-pub struct UiConfig {
+#[derive(ConfigDeserialize, Debug, PartialEq)]
+pub struct UIConfig {
     /// Font configuration.
     pub font: Font,
 
@@ -73,7 +73,29 @@ pub struct UiConfig {
     background_opacity: Percentage,
 }
 
-impl Default for UiConfig {
+impl Clone for UIConfig {
+    fn clone(&self) -> Self {
+        Self {
+            font: self.font.clone(),
+            window: self.window.clone(),
+            grep_after: self.grep_after.clone(),
+            mouse: self.mouse.clone(),
+            debug: self.debug.clone(),
+            alt_send_esc: self.alt_send_esc,
+            live_config_reload: self.live_config_reload,
+            bell: self.bell.clone(),
+            colors: self.colors.clone(),
+            draw_bold_text_with_bright_colors: self.draw_bold_text_with_bright_colors,
+            config_paths: self.config_paths.clone(),
+            hints: Hints::default(),
+            key_bindings: self.key_bindings.clone(),
+            mouse_bindings: self.mouse_bindings.clone(),
+            background_opacity: self.background_opacity.clone()
+        }
+    }
+}
+
+impl Default for UIConfig {
     fn default() -> Self {
         Self {
             alt_send_esc: true,
@@ -95,7 +117,7 @@ impl Default for UiConfig {
     }
 }
 
-impl UiConfig {
+impl UIConfig {
     /// Generate key bindings for all keyboard hints.
     pub fn generate_hint_bindings(&mut self) {
         for hint in &self.hints.enabled {

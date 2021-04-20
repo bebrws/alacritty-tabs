@@ -5,13 +5,14 @@
 //! needs to be tracked. Additionally, we need a bit of a state machine to
 //! determine what to do when a non-modifier key is pressed.
 
-use crate::{clipboard, tab_manager::TabManager};
-use alacritty_terminal::sync::FairMutex;
+use crate:: tab_manager::TabManager;
 use log::trace;
+
+
 use std::borrow::Cow;
 use std::cmp::{max, min, Ordering};
 use std::marker::PhantomData;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use glutin::dpi::PhysicalPosition;
@@ -24,7 +25,6 @@ use glutin::platform::macos::EventLoopWindowTargetExtMacOS;
 use glutin::window::CursorIcon;
 
 use crate::event::EventProxy;
-
 
 use alacritty_terminal::ansi::{ClearMode, Handler};
 use alacritty_terminal::event::EventListener;
@@ -45,8 +45,6 @@ use crate::event::{ClickState, Event, Mouse, TYPING_SEARCH_DELAY};
 use crate::message_bar::{self, Message};
 use crate::scheduler::{Scheduler, TimerId};
 
-#[macro_use]
-use crate::macros;
 
 /// Font size change interval.
 pub const FONT_SIZE_STEP: f32 = 0.5;
@@ -70,9 +68,9 @@ pub struct Processor<T: EventListener, A: ActionContext<T>> {
 }
 
 pub trait ActionContext<T: EventListener> {
-    fn tab_manager(&mut self) -> Arc<TabManager>;
-    fn find_word<U: EventListener>(&self, point_p: Point, side: Side, terminal: &Term<U>) -> String;
-    fn write_to_pty<B: Into<Cow<'static, [u8]>>>(&mut self, _data: B);
+    fn tab_manager(&mut self) -> Arc<TabManager<EventProxy>>;
+    fn find_word<U: EventListener>(&mut self, point_p: Point,  terminal: &Term<U>) -> Option<String>;
+    fn write_to_pty<B: Into<Cow<'static, [u8]>>>(&mut self, _val: B) {}
     fn mark_dirty(&mut self) {}
     fn size_info(&self) -> SizeInfo;
     fn copy_selection(&mut self, _ty: ClipboardType) {}
@@ -89,9 +87,9 @@ pub trait ActionContext<T: EventListener> {
     fn scroll(&mut self, _scroll: Scroll) {}
     fn window(&mut self) -> &mut Window;
     fn display(&mut self) -> &mut Display;
+    fn terminal_clone(&self) -> Term<T>;
     fn terminal(&self) -> &Term<T>;
-
-    fn terminal_mut(&mut self) -> &mut Term<EventProxy>;
+    fn terminal_mut(&mut self) -> &mut Term<T>;
     fn spawn_new_instance(&mut self) {}
     fn change_font_size(&mut self, _delta: f32) {}
     fn reset_font_size(&mut self) {}
@@ -111,7 +109,7 @@ pub trait ActionContext<T: EventListener> {
     fn search_history_next(&mut self) {}
     fn search_next(
         &mut self,
-        origin: Point<usize>,
+        origin: Point,
         direction: Direction,
         side: Side,
     ) -> Option<Match>;
@@ -149,6 +147,25 @@ impl<T: EventListener> Execute<T> for Action {
     #[inline]
     fn execute<A: ActionContext<T>>(&self, ctx: &mut A) {
         match self {
+            Action::NewTab => {
+                let tab_manager = ctx.tab_manager();
+                let idx = tab_manager.new_tab().unwrap();
+                tab_manager.select_tab(idx);
+                ctx.mark_dirty();
+            },
+            Action::PreviousTab => {
+                let tab_manager = ctx.tab_manager();
+                let prev_tab = tab_manager.prev_tab_idx().unwrap();
+                tab_manager.select_tab(prev_tab);
+                ctx.mark_dirty();
+            },            
+            Action::NextTab => {
+                let tab_manager = ctx.tab_manager();
+                let next_tab = tab_manager.next_tab_idx().unwrap();
+                tab_manager.select_tab(next_tab);
+
+                ctx.mark_dirty();
+            },
             Action::Esc(s) => {
                 ctx.on_typing_start();
 
@@ -803,22 +820,18 @@ impl<T: EventListener, A: ActionContext<T>> Processor<T, A> {
             }
 
             if button == MouseButton::Left && self.ctx.modifiers().logo() {
-                let mouse = self.ctx.mouse();
-                let mut point = self.ctx.size_info().pixels_to_coords(mouse.x, mouse.y);
-                let side = self.ctx.mouse().cell_side;
-                let terminal = self.ctx.terminal();
-                let word_clicked = self.ctx.find_word(point, side, terminal);
+                let mut c = &mut self.ctx;
+                
+                let mouse = c.mouse();
+                let point = c.size_info().pixels_to_coords(mouse.x, mouse.y);
+                let terminal = c.terminal_clone();
+                
+                let word_clicked_option = c.find_word(point, &terminal);
 
-                if state == ElementState::Pressed {
-                    self.ctx.write_to_pty(word_clicked.as_bytes().to_vec());
-                }
-
-            }
-
-            if button == MouseButton::Left && self.ctx.modifiers().alt() {
-                if state == ElementState::Released {
-                    self.ctx.copy_selection(alacritty_terminal::term::ClipboardType::Selection);
-                    self.ctx.clear_selection();
+                if word_clicked_option.is_some() && state == ElementState::Pressed {
+                    if let Some(wc) = word_clicked_option {
+                        self.ctx.write_to_pty(wc.as_bytes().to_vec());
+                    }
                 }
             }
         }
@@ -1058,6 +1071,8 @@ impl<T: EventListener, A: ActionContext<T>> Processor<T, A> {
 mod tests {
     use super::*;
 
+    use std::vec::Vec;
+    use std::sync::RwLock;
     use glutin::event::{Event as GlutinEvent, VirtualKeyCode, WindowEvent};
 
     use alacritty_terminal::event::Event as TerminalEvent;
@@ -1066,14 +1081,37 @@ mod tests {
     use crate::config::Binding;
     use crate::message_bar::MessageBuffer;
 
+    #[derive(Debug, Clone)]
+    struct MockEventProxy {
+        pub events_sent: Arc<RwLock<Vec<alacritty_terminal::event::Event>>>,
+    }
+
+    impl MockEventProxy {
+        pub fn new() -> Self {
+            Self {
+                events_sent: Arc::new(RwLock::new(Vec::new()))
+            }
+        }
+    }
+
+    impl EventListener for MockEventProxy {
+        fn send_event(&self, event: alacritty_terminal::event::Event) {
+            loop {
+                if let Ok(mut event_sent_guard) = self.events_sent.try_write() {
+                    let events_sent = &mut *event_sent_guard;
+                    events_sent.push(event);
+                    break;
+                }
+            }
+            
+        }
+    }
+
     const KEY: VirtualKeyCode = VirtualKeyCode::Key0;
 
-    struct MockEventProxy;
-    impl EventListener for MockEventProxy {}
-
     struct ActionContext<'a, T> {
-        pub tab_mananger: Arc<TabManager>,
-        // pub terminal: &'a mut Term<T>,
+        pub tab_manager: Arc<TabManager<T>>,
+        pub terminal: &'a mut Term<T>,
         pub selection: &'a mut Option<Selection>,
         pub size_info: &'a SizeInfo,
         pub mouse: &'a mut Mouse,
@@ -1085,7 +1123,7 @@ mod tests {
         config: &'a Config,
     }
 
-    impl<'a, T: EventListener> super::ActionContext<T> for ActionContext<'a, T> {
+    impl<'a, T: Clone + EventListener> super::ActionContext<T> for ActionContext<'a, T> {
         fn search_next(
             &mut self,
             _origin: Point,
@@ -1103,12 +1141,12 @@ mod tests {
             false
         }
 
-        fn tab_manager(&mut self) -> Arc<TabManager> {
+        fn tab_manager(&mut self) -> Arc<TabManager<EventProxy>> {
             unimplemented!();
         }
 
-        fn find_word<U: EventListener>(&self, point_p: Point, side: Side, terminal: &Term<U>) -> String {
-            ""
+        fn find_word<U: EventListener>(&mut self, _point_p: Point, _terminal: &Term<U>) -> Option<String> {
+            unimplemented!();
         }
         fn size_info(&self) -> SizeInfo {
             *self.size_info
@@ -1119,7 +1157,7 @@ mod tests {
         }
 
         fn scroll(&mut self, scroll: Scroll) {
-            self.terminal.scroll_display(scroll);
+            self.terminal_mut().scroll_display(scroll);
         }
 
         fn mouse_mode(&self) -> bool {
@@ -1159,11 +1197,11 @@ mod tests {
         }
 
         fn terminal(& self) -> &Term<T> {
-            unimplemented!();
+            self.terminal
         }
 
-        fn terminal_mut(&mut self) -> &mut Term<EventProxy> {
-            unimplemented();
+        fn terminal_mut(&mut self) -> &mut Term<T> {
+            &mut self.terminal
         }
 
         fn pop_message(&mut self) {
@@ -1213,8 +1251,9 @@ mod tests {
                     false,
                 );
 
-                let mut terminal = Term::new(&cfg, size, MockEventProxy);
-
+                let mut terminal = Term::new(&cfg, size, MockEventProxy::new());
+                let tab_manager = TabManager::new(MockEventProxy::new(), cfg.clone());
+                let tab_manager_arc =  Arc::new(tab_manager);
                 let mut mouse = Mouse {
                     click_state: $initial_state,
                     ..Mouse::default()
@@ -1225,6 +1264,7 @@ mod tests {
                 let mut message_buffer = MessageBuffer::new();
 
                 let context = ActionContext {
+                    tab_manager: tab_manager_arc,
                     terminal: &mut terminal,
                     selection: &mut selection,
                     mouse: &mut mouse,

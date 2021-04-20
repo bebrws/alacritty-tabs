@@ -58,8 +58,7 @@ impl<T> Term<T> {
         side: Side,
         mut max_lines: Option<usize>,
     ) -> Option<Match> {
-        // origin = self.expand_wide(origin, direction);
-        origin = Point::new(Line(0), Column(0));
+        origin = self.expand_wide(origin, direction);
 
         max_lines = max_lines.filter(|max_lines| max_lines + 1 < self.total_lines());
 
@@ -68,6 +67,8 @@ impl<T> Term<T> {
             Direction::Left => self.next_match_left(dfas, origin, side, max_lines),
         }
     }
+    
+    
 
     /// Find the next match to the right of the origin.
     fn next_match_right(

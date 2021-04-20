@@ -30,6 +30,7 @@ dependencies = [
  "alacritty_config_derive",
  "alacritty_terminal",
  "anyhow",
+ "arc-swap",
  "bitflags",
  "chrono",
  "clap",
@@ -44,12 +45,17 @@ dependencies = [
  "futures-core",
  "gl_generator",
  "glutin",
+ "handle",
  "libc",
  "log",
  "miniserde",
+ "mio-anonymous-pipes",
+ "miow 0.3.7",
  "nix 0.19.1",
  "notify",
  "objc",
+ "once_cell",
+ "pad",
  "parking_lot",
  "png",
  "raw-window-handle",
@@ -137,6 +143,12 @@ name = "anyhow"
 version = "1.0.40"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "28b2cd92db5cbd74e8e5028f7e27dd7aa3090e89e4f2a197cc7c8dfb69c7063b"
+
+[[package]]
+name = "arc-swap"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d4d7d63395147b81a9e570bcc6243aaf71c017bd666d4909cfef0085bdda8d73"
 
 [[package]]
 name = "arrayref"
@@ -967,6 +979,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "handle"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "17d6ba76fcedf88ca8501fbc08dc714952480f4daeb328697a65e473452611f9"
+
+[[package]]
 name = "hermit-abi"
 version = "0.1.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1470,6 +1488,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f923fb806c46266c02ab4a5b239735c144bdeda724a50ed058e5226f594cde3"
 dependencies = [
  "ttf-parser",
+]
+
+[[package]]
+name = "pad"
+version = "0.1.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d2ad9b889f1b12e0b9ee24db044b5129150d5eada288edc800f789928dc8c0e3"
+dependencies = [
+ "unicode-width",
 ]
 
 [[package]]

@@ -1,10 +1,3 @@
-# This branch is using RwLock
-
-Notice how much slower this is!
-
-# Original Readme.md:
-
-
 <p align="center">
     <img width="200" alt="Alacritty Logo" src="https://raw.githubusercontent.com/alacritty/alacritty/master/extra/logo/compat/alacritty-term%2Bscanlines.png">
 </p>
@@ -24,6 +17,8 @@ allows for extensive [configuration](#configuration). By integrating with other
 applications, rather than reimplementing their functionality, it manages to
 provide a flexible set of [features](./docs/features.md) with high performance.
 The supported platforms currently consist of BSD, Linux, macOS and Windows.
+
+This branch contains support for tabs, terminal multiplexing persisting as long as the Alacritty process lives.
 
 The software is considered to be at a **beta** level of readiness; there are
 a few missing features and bugs to be fixed, but it is already used by many as

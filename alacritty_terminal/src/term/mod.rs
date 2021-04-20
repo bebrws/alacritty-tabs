@@ -5,8 +5,6 @@ use std::ops::{Index, IndexMut, Range};
 use std::sync::Arc;
 use std::{mem, ptr, str};
 
-use crate::sync::FairMutex;
-
 use bitflags::bitflags;
 use log::{debug, trace};
 use serde::{Deserialize, Serialize};
@@ -106,6 +104,21 @@ pub struct SizeInfo {
 }
 
 impl SizeInfo {
+
+        /// Convert window space pixels to terminal grid coordinates.
+    ///
+    /// If the coordinates are outside of the terminal grid, like positions inside the padding, the
+    /// coordinates will be clamped to the closest grid coordinates.
+    pub fn pixels_to_coords(&self, x: usize, y: usize) -> Point {
+        let col = Column(x.saturating_sub(self.padding_x as usize) / (self.cell_width as usize));
+        let line = Line(y.saturating_sub(self.padding_y as usize) as i32 / (self.cell_height as i32));
+
+        Point {
+            line: min(line, Line(self.screen_lines().saturating_sub(1) as i32)),
+            column: min(col, Column(self.columns().saturating_sub(1))),
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         width: f32,
@@ -209,6 +222,7 @@ impl Dimensions for SizeInfo {
     }
 }
 
+#[derive(Clone)]
 pub struct Term<T> {
     /// Terminal focus controlling the cursor shape.
     pub is_focused: bool,
@@ -262,7 +276,7 @@ pub struct Term<T> {
     event_proxy: T,
 
     /// Current title of the window.
-    title: Option<String>,
+    pub title: Option<String>,
 
     /// Stack of saved window titles. When a title is popped from this stack, the `title` for the
     /// term is set.
@@ -274,6 +288,8 @@ pub struct Term<T> {
 }
 
 impl<T> Term<T> {
+
+    
     #[inline]
     pub fn scroll_display(&mut self, scroll: Scroll)
     where
@@ -292,7 +308,7 @@ impl<T> Term<T> {
 
     pub fn new<C>(config: &Config<C>, size: SizeInfo, event_proxy: T) -> Term<T> {
         let num_cols = size.columns;
-        let num_lines = size.screen_lines;
+        let num_lines = size.screen_lines - 1;
 
         let history_size = config.scrolling.history() as usize;
         let grid = Grid::new(num_lines, num_cols, history_size);
@@ -476,19 +492,12 @@ impl<T> Term<T> {
     pub fn resize(&mut self, size: SizeInfo) {
         self.cell_width = size.cell_width as usize;
         self.cell_height = size.cell_height as usize;
-
+    
         let old_cols = self.columns();
         let old_lines = self.screen_lines();
-
+    
         let num_cols = size.columns;
-        let num_lines = size.screen_lines;
-
-        if old_cols == num_cols && old_lines == num_lines {
-            debug!("Term::resize dimensions unchanged");
-            return;
-        }
-
-        debug!("New num_cols is {} and num_lines is {}", num_cols, num_lines);
+        let num_lines = size.screen_lines - 1;
 
         // Move vi mode cursor with the content.
         let history_size = self.history_size();
@@ -1542,6 +1551,7 @@ impl<T: EventListener> Handler for Term<T> {
             },
         }
     }
+    
 
     #[inline]
     fn unset_mode(&mut self, mode: ansi::Mode) {
@@ -1733,6 +1743,7 @@ pub enum ClipboardType {
     Selection,
 }
 
+#[derive(Clone)]
 struct TabStops {
     tabs: Vec<bool>,
 }
