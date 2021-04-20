@@ -1,5 +1,5 @@
 //! Process window events.
-
+use std::path::Path;
 use std::borrow::Cow;
 use std::cmp::{max, min};
 use std::collections::VecDeque;
@@ -14,19 +14,21 @@ use std::mem;
 use std::path::{Path, PathBuf};
 #[cfg(not(any(target_os = "macos", windows)))]
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, RwLock};
+use std::rc::Rc;
 use std::time::{Duration, Instant};
-
+use log::{debug, trace, error, info};
 use glutin::dpi::PhysicalSize;
 use glutin::event::{ElementState, Event as GlutinEvent, ModifiersState, MouseButton, WindowEvent};
 use glutin::event_loop::{ControlFlow, EventLoop, EventLoopProxy, EventLoopWindowTarget};
 use glutin::platform::run_return::EventLoopExtRunReturn;
 #[cfg(all(feature = "wayland", not(any(target_os = "macos", windows))))]
 use glutin::platform::unix::EventLoopWindowTargetExtUnix;
-use log::info;
 use serde_json as json;
-
 use crossfont::{self, Size};
+
+use crate::display::content::RenderableContent;
+use crate::display::color::List;
 
 use alacritty_terminal::config::LOG_TARGET_CONFIG;
 use alacritty_terminal::event::{Event as TerminalEvent, EventListener, Notify, OnResize};
@@ -36,8 +38,8 @@ use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::search::{Match, RegexSearch};
 use alacritty_terminal::term::{ClipboardType, SizeInfo, Term, TermMode};
-#[cfg(not(windows))]
-use alacritty_terminal::tty;
+
+use crate::tab_manager::{self, TabManager};
 
 use crate::cli::Options as CLIOptions;
 use crate::clipboard::Clipboard;
@@ -53,11 +55,15 @@ use crate::macos;
 use crate::message_bar::{Message, MessageBuffer};
 use crate::scheduler::{Scheduler, TimerId};
 
+
+#[macro_use]
+use crate::macros;
+
 /// Duration after the last user input until an unlimited search is performed.
 pub const TYPING_SEARCH_DELAY: Duration = Duration::from_millis(500);
 
 /// Maximum number of lines for the blocking search while still typing the search regex.
-const MAX_SEARCH_WHILE_TYPING: Option<usize> = Some(1000);
+const MAX_SEARCH_WHILE_TYPING: Option<usize> = Some(10000);
 
 /// Maximum number of search terms stored in the history.
 const MAX_SEARCH_HISTORY_SIZE: usize = 255;
@@ -156,9 +162,9 @@ impl Default for SearchState {
     }
 }
 
-pub struct ActionContext<'a, N, T> {
-    pub notifier: &'a mut N,
-    pub terminal: &'a mut Term<T>,
+pub struct ActionContext<'a> {
+    pub tab_manager: Arc<TabManager>,
+    pub terminal: &'a mut Term<EventProxy>,
     pub clipboard: &'a mut Clipboard,
     pub mouse: &'a mut Mouse,
     pub received_count: &'a mut usize,
@@ -176,10 +182,16 @@ pub struct ActionContext<'a, N, T> {
     dirty: &'a mut bool,
 }
 
-impl<'a, N: Notify + 'a, T: EventListener> input::ActionContext<T> for ActionContext<'a, N, T> {
+impl<'a> input::ActionContext<EventProxy> for ActionContext<'a> {
     #[inline]
-    fn write_to_pty<B: Into<Cow<'static, [u8]>>>(&self, val: B) {
-        self.notifier.notify(val);
+    fn write_to_pty<B: Into<Cow<'static, [u8]>>>(&mut self, val: B) {
+        let tab_manager = self.tab_manager();
+        let c: Cow<[u8]> = val.into();
+        let vc: Vec<u8> = c.into_iter().map(|c| *c).collect();
+        // tab_manager.receive_stdin(&vc);
+        let data: &[u8] = &vc;
+        (&mut *(tab_manager.get_selected_tab_pty().lock())).write(data);
+        
     }
 
     /// Request a redraw.
@@ -196,7 +208,7 @@ impl<'a, N: Notify + 'a, T: EventListener> input::ActionContext<T> for ActionCon
     fn scroll(&mut self, scroll: Scroll) {
         let old_offset = self.terminal.grid().display_offset() as i32;
 
-        self.terminal.scroll_display(scroll);
+        self.terminal_mut().scroll_display(scroll);
 
         // Keep track of manual display offset changes during search.
         if self.search_active() {
@@ -265,6 +277,11 @@ impl<'a, N: Notify + 'a, T: EventListener> input::ActionContext<T> for ActionCon
         *self.dirty = true;
     }
 
+
+    fn selection_is_empty(&self) -> bool {
+        self.terminal().selection.as_ref().map(Selection::is_empty).unwrap_or(true)
+    }
+
     fn start_selection(&mut self, ty: SelectionType, point: Point, side: Side) {
         self.terminal.selection = Some(Selection::new(ty, point, side));
         *self.dirty = true;
@@ -272,8 +289,69 @@ impl<'a, N: Notify + 'a, T: EventListener> input::ActionContext<T> for ActionCon
         self.copy_selection(ClipboardType::Selection);
     }
 
+
+    fn tab_manager(&mut self) -> Arc<TabManager> {
+        self.tab_manager.clone()
+    }
+
+    fn find_word<U: EventListener>(&self, point: Point, side: Side, terminal: &Term<U>) -> String {
+        let mut ret: String = "".to_string();
+
+
+        let dfas = self.search_state.dfas();
+        let colors = List::from(&self.config.ui_config.colors);
+        let mut content = RenderableContent::new(&terminal, dfas, self.config, &colors, false);
+        let mut grid_cells = Vec::new();
+        
+        while let Some(cell) = content.next() {
+            grid_cells.push(cell);
+        }
+    
+
+        // let mut lastEmpty = true;
+        let mut found_point = false;
+        let mut found_end = false;
+        let mut string = String::new();
+        let mut last_column = 0;
+        let mut cell_iter = grid_cells.iter();
+        let mut cell_or_none = cell_iter.next();
+        while found_end == false && !cell_or_none.is_none() {
+            let cell = (*cell_or_none.unwrap()).clone();
+            let mut c = cell.character;
+
+            if last_column + 1 != cell.point.column.0 || c == ' ' {
+                if found_point {
+                    found_end = true;
+                } else {
+                    string = String::new();
+                    if c != ' ' {
+                        string.push(c.clone());
+                    }
+                }
+            } else {
+                string.push(c.clone());
+            }
+
+            if cell.point.column == point.column && cell.point.line == point.line {
+                found_point = true;
+            }
+            cell_or_none = cell_iter.next();
+            last_column = cell.point.column.0;
+        }
+
+        if found_point {
+            ret = string;
+        } else {
+            ret = String::new();
+        }
+
+        return ret;
+    }
+
+
+
     fn toggle_selection(&mut self, ty: SelectionType, point: Point, side: Side) {
-        match &mut self.terminal.selection {
+        match &mut self.terminal_mut().selection {
             Some(selection) if selection.ty == ty && !selection.is_empty() => {
                 self.clear_selection();
             },
@@ -328,15 +406,14 @@ impl<'a, N: Notify + 'a, T: EventListener> input::ActionContext<T> for ActionCon
         &mut self.display
     }
 
-    #[inline]
-    fn terminal(&self) -> &Term<T> {
-        self.terminal
+    fn terminal(&self) -> &Term<EventProxy> {
+        &self.terminal
     }
 
-    #[inline]
-    fn terminal_mut(&mut self) -> &mut Term<T> {
-        self.terminal
+    fn terminal_mut(&mut self) -> &mut Term<EventProxy> {
+        &mut self.terminal
     }
+
 
     fn spawn_new_instance(&mut self) {
         let mut env_args = env::args();
@@ -344,10 +421,12 @@ impl<'a, N: Notify + 'a, T: EventListener> input::ActionContext<T> for ActionCon
 
         #[cfg(unix)]
         let mut args = {
+            let result = nix::pty::openpty(None, None).unwrap();
             // Use working directory of controlling process, or fallback to initial shell.
-            let mut pid = unsafe { libc::tcgetpgrp(tty::master_fd()) };
+            let mut pid = result.master;
+            // posix_openpt(OFlag::O_RDWR).unwrap().AsRawFd();
             if pid < 0 {
-                pid = tty::child_pid();
+                pid = result.slave;
             }
 
             #[cfg(not(any(target_os = "macos", target_os = "freebsd")))]
@@ -417,8 +496,8 @@ impl<'a, N: Notify + 'a, T: EventListener> input::ActionContext<T> for ActionCon
         self.search_state.focused_match = None;
 
         // Store original search position as origin and reset location.
-        if self.terminal.mode().contains(TermMode::VI) {
-            self.search_state.origin = self.terminal.vi_mode_cursor.point;
+        if self.terminal().mode().contains(TermMode::VI) {
+            self.search_state.origin = self.terminal().vi_mode_cursor.point;
             self.search_state.display_offset_delta = 0;
         } else {
             let screen_lines = self.terminal.screen_lines();
@@ -432,11 +511,11 @@ impl<'a, N: Notify + 'a, T: EventListener> input::ActionContext<T> for ActionCon
         self.display_update_pending.dirty = true;
         *self.dirty = true;
     }
-
+    
     #[inline]
     fn confirm_search(&mut self) {
         // Just cancel search when not in vi mode.
-        if !self.terminal.mode().contains(TermMode::VI) {
+        if !self.terminal().mode().contains(TermMode::VI) {
             self.cancel_search();
             return;
         }
@@ -451,7 +530,7 @@ impl<'a, N: Notify + 'a, T: EventListener> input::ActionContext<T> for ActionCon
 
     #[inline]
     fn cancel_search(&mut self) {
-        if self.terminal.mode().contains(TermMode::VI) {
+        if self.terminal().mode().contains(TermMode::VI) {
             // Recover pre-search state in vi mode.
             self.search_reset_state();
         } else if let Some(focused_match) = &self.search_state.focused_match {
@@ -492,9 +571,9 @@ impl<'a, N: Notify + 'a, T: EventListener> input::ActionContext<T> for ActionCon
             _ => return,
         }
 
-        if !self.terminal.mode().contains(TermMode::VI) {
+        if !self.terminal().mode().contains(TermMode::VI) {
             // Clear selection so we do not obstruct any matches.
-            self.terminal.selection = None;
+            self.terminal_mut().selection = None;
         }
 
         self.update_search();
@@ -578,6 +657,7 @@ impl<'a, N: Notify + 'a, T: EventListener> input::ActionContext<T> for ActionCon
         self.terminal.scroll_display(Scroll::Delta(-self.search_state.display_offset_delta));
         self.search_state.origin = new_origin;
     }
+
 
     /// Find the next search match.
     fn search_next(&mut self, origin: Point, direction: Direction, side: Side) -> Option<Match> {
@@ -699,7 +779,7 @@ impl<'a, N: Notify + 'a, T: EventListener> input::ActionContext<T> for ActionCon
         }
 
         self.cancel_search();
-        self.terminal.toggle_vi_mode();
+        self.terminal_mut().toggle_vi_mode();
 
         *self.dirty = true;
     }
@@ -725,7 +805,7 @@ impl<'a, N: Notify + 'a, T: EventListener> input::ActionContext<T> for ActionCon
     }
 }
 
-impl<'a, N: Notify + 'a, T: EventListener> ActionContext<'a, N, T> {
+impl<'a> ActionContext<'a> {
     fn update_search(&mut self) {
         let regex = match self.search_state.regex() {
             Some(regex) => regex,
@@ -752,6 +832,7 @@ impl<'a, N: Notify + 'a, T: EventListener> ActionContext<'a, N, T> {
         *self.dirty = true;
     }
 
+
     /// Reset terminal to the state before search was started.
     fn search_reset_state(&mut self) {
         // Unschedule pending timers.
@@ -775,6 +856,7 @@ impl<'a, N: Notify + 'a, T: EventListener> ActionContext<'a, N, T> {
         *self.dirty = true;
     }
 
+
     /// Jump to the first regex match from the search origin.
     fn goto_match(&mut self, mut limit: Option<usize>) {
         let dfas = match &self.search_state.dfas {
@@ -783,7 +865,7 @@ impl<'a, N: Notify + 'a, T: EventListener> ActionContext<'a, N, T> {
         };
 
         // Limit search only when enough lines are available to run into the limit.
-        limit = limit.filter(|&limit| limit <= self.terminal.total_lines());
+        limit = limit.filter(|&limit| limit <= self.terminal().total_lines());
 
         // Jump to the next match.
         let direction = self.search_state.direction;
@@ -792,12 +874,12 @@ impl<'a, N: Notify + 'a, T: EventListener> ActionContext<'a, N, T> {
             Some(regex_match) => {
                 let old_offset = self.terminal.grid().display_offset() as i32;
 
-                if self.terminal.mode().contains(TermMode::VI) {
+                if self.terminal().mode().contains(TermMode::VI) {
                     // Move vi cursor to the start of the match.
-                    self.terminal.vi_goto_point(*regex_match.start());
+                    self.terminal_mut().vi_goto_point(*regex_match.start());
                 } else {
                     // Select the match when vi mode is not active.
-                    self.terminal.scroll_to_point(*regex_match.start());
+                    self.terminal_mut().scroll_to_point(*regex_match.start());
                 }
 
                 // Update the focused match.
@@ -843,19 +925,21 @@ impl<'a, N: Notify + 'a, T: EventListener> ActionContext<'a, N, T> {
 
     /// Update the cursor blinking state.
     fn update_cursor_blinking(&mut self) {
+        
+
         // Get config cursor style.
         let mut cursor_style = self.config.cursor.style;
-        if self.terminal.mode().contains(TermMode::VI) {
+        if self.terminal().mode().contains(TermMode::VI) {
             cursor_style = self.config.cursor.vi_mode_style.unwrap_or(cursor_style);
         };
 
         // Check terminal cursor style.
-        let terminal_blinking = self.terminal.cursor_style().blinking;
+        let terminal_blinking = self.terminal().cursor_style().blinking;
         let blinking = cursor_style.blinking_override().unwrap_or(terminal_blinking);
 
         // Update cursor blinking state.
         self.scheduler.unschedule(TimerId::BlinkCursor);
-        if blinking && self.terminal.is_focused {
+        if blinking && self.terminal().is_focused {
             self.scheduler.schedule(
                 GlutinEvent::UserEvent(Event::BlinkCursor),
                 Duration::from_millis(self.config.cursor.blink_interval()),
@@ -938,8 +1022,8 @@ impl Mouse {
 ///
 /// Stores some state from received events and dispatches actions when they are
 /// triggered.
-pub struct Processor<N> {
-    notifier: N,
+pub struct Processor {
+    tab_manager: Arc<TabManager>,
     mouse: Mouse,
     received_count: usize,
     suppress_chars: bool,
@@ -954,22 +1038,21 @@ pub struct Processor<N> {
     dirty: bool,
 }
 
-impl<N: Notify + OnResize> Processor<N> {
+impl Processor {
     /// Create a new event processor.
     ///
     /// Takes a writer which is expected to be hooked up to the write end of a PTY.
     pub fn new(
-        notifier: N,
+        tab_manager: Arc<TabManager>,
         message_buffer: MessageBuffer,
         config: Config,
         display: Display,
         cli_options: CLIOptions,
-    ) -> Processor<N> {
+    ) -> Processor {
         Processor {
             font_size: config.ui_config.font.size(),
             message_buffer,
             cli_options,
-            notifier,
             display,
             config,
             received_count: Default::default(),
@@ -1008,10 +1091,14 @@ impl<N: Notify + OnResize> Processor<N> {
     }
 
     /// Run the event loop.
-    pub fn run<T>(&mut self, terminal: Arc<FairMutex<Term<T>>>, mut event_loop: EventLoop<Event>)
-    where
-        T: EventListener,
-    {
+    pub fn run(&mut self, mut event_loop: EventLoop<Event>) {
+        // NOTE: Since this takes a pointer to the winit event loop, it MUST be dropped first.
+        #[cfg(all(feature = "wayland", not(any(target_os = "macos", windows))))]
+        let mut clipboard = unsafe { Clipboard::new(event_loop.wayland_display()) };
+        #[cfg(any(not(feature = "wayland"), target_os = "macos", windows))]
+        let mut clipboard = Clipboard::new();
+
+
         let mut scheduler = Scheduler::new();
 
         // Start the initial cursor blinking timer.
@@ -1020,14 +1107,15 @@ impl<N: Notify + OnResize> Processor<N> {
             self.event_queue.push(event.into());
         }
 
-        // NOTE: Since this takes a pointer to the winit event loop, it MUST be dropped first.
-        #[cfg(all(feature = "wayland", not(any(target_os = "macos", windows))))]
-        let mut clipboard = unsafe { Clipboard::new(event_loop.wayland_display()) };
-        #[cfg(any(not(feature = "wayland"), target_os = "macos", windows))]
-        let mut clipboard = Clipboard::new();
+        let mut last = Instant::now();
+        let ld = Duration::from_millis(500);
+
+        let print_glutin_events = self.config.ui_config.debug.print_events;
+        let debug_ref_test = self.config.ui_config.debug.ref_test;
 
         event_loop.run_return(|event, event_loop, control_flow| {
-            if self.config.ui_config.debug.print_events {
+            
+            if print_glutin_events {
                 info!("glutin event: {:?}", event);
             }
 
@@ -1035,6 +1123,8 @@ impl<N: Notify + OnResize> Processor<N> {
             if Self::skip_event(&event) {
                 return;
             }
+
+            let mut display_update_pending = DisplayUpdate::default();
 
             match event {
                 // Check for shutdown.
@@ -1072,14 +1162,16 @@ impl<N: Notify + OnResize> Processor<N> {
                 },
             }
 
-            let mut terminal = terminal.lock();
-
             let mut display_update_pending = DisplayUpdate::default();
             let old_is_searching = self.search_state.history_index.is_some();
 
+            let mut terminal_clone = self.tab_manager.clone().get_selected_tab_terminal();
+            let mut terminal_guard = terminal_clone.lock();
+            let mut terminal = &mut *terminal_guard;
+
             let context = ActionContext {
-                terminal: &mut terminal,
-                notifier: &mut self.notifier,
+                tab_manager: self.tab_manager.clone(),
+                terminal,
                 mouse: &mut self.mouse,
                 clipboard: &mut clipboard,
                 received_count: &mut self.received_count,
@@ -1098,13 +1190,18 @@ impl<N: Notify + OnResize> Processor<N> {
             };
             let mut processor = input::Processor::new(context);
 
+            
             for event in self.event_queue.drain(..) {
                 Processor::handle_event(event, &mut processor);
             }
 
+            drop(processor);
+            drop(terminal_guard);
+        
+
             // Process DisplayUpdate events.
             if display_update_pending.dirty {
-                self.submit_display_update(&mut terminal, old_is_searching, display_update_pending);
+                self.submit_display_update(old_is_searching, display_update_pending);
             }
 
             // Skip rendering on Wayland until we get frame event from compositor.
@@ -1135,25 +1232,35 @@ impl<N: Notify + OnResize> Processor<N> {
                     *control_flow = ControlFlow::Poll;
                 }
 
+                let tab_manager_after_clone = self.tab_manager.clone();
+                let terminal_arc_mutex_clone = tab_manager_after_clone.get_selected_tab_terminal();
+                let mut terminal_guard = terminal_arc_mutex_clone.lock();
+                let mut terminal = &mut *terminal_guard;
+                
+                
                 // Redraw screen.
                 self.display.draw(terminal, &self.message_buffer, &self.config, &self.search_state);
             }
         });
 
         // Write ref tests to disk.
-        if self.config.ui_config.debug.ref_test {
-            self.write_ref_test_results(&terminal.lock());
+        if debug_ref_test {
+            let tab_manager = self.tab_manager.clone();
+            let terminal_arc_mutex_clone = tab_manager.get_selected_tab_terminal();
+            let mut terminal_guard = terminal_arc_mutex_clone.lock();
+            let mut terminal = &mut *terminal_guard;
+            self.write_ref_test_results(&terminal);
+            drop(terminal_guard);
         }
     }
 
     /// Handle events from glutin.
     ///
     /// Doesn't take self mutably due to borrow checking.
-    fn handle_event<T>(
+    fn handle_event(
         event: GlutinEvent<'_, Event>,
-        processor: &mut input::Processor<T, ActionContext<'_, N, T>>,
-    ) where
-        T: EventListener,
+        processor: &mut input::Processor<EventProxy, ActionContext<'_>>,
+    )
     {
         match event {
             GlutinEvent::UserEvent(event) => match event {
@@ -1196,6 +1303,19 @@ impl<N: Notify + OnResize> Processor<N> {
                         }
                     },
                     TerminalEvent::Wakeup => *processor.ctx.dirty = true,
+                    TerminalEvent::Close(idx) => {
+                        let tab_manager = processor.ctx.tab_manager();
+
+                        // Note: no longer attempting to tie the tab_idx to the tab being closed
+                        tab_manager.remove_selected_tab();
+
+                        
+                        let mut terminal_arc = tab_manager.get_selected_tab_terminal();
+                        let mut terminal_guard = terminal_arc.lock();
+                        let mut terminal = &mut *terminal_guard;
+                        *processor.ctx.dirty = true;
+                        drop(terminal_guard);
+                    },
                     TerminalEvent::Bell => {
                         // Set window urgency.
                         if processor.ctx.terminal.mode().contains(TermMode::URGENCY_HINTS) {
@@ -1224,7 +1344,9 @@ impl<N: Notify + OnResize> Processor<N> {
                     },
                     TerminalEvent::PtyWrite(text) => processor.ctx.write_to_pty(text.into_bytes()),
                     TerminalEvent::MouseCursorDirty => processor.reset_mouse_cursor(),
-                    TerminalEvent::Exit => (),
+                    TerminalEvent::Exit => {
+                        
+                    },
                     TerminalEvent::CursorBlinkingChange(_) => {
                         processor.ctx.update_cursor_blinking();
                     },
@@ -1233,7 +1355,11 @@ impl<N: Notify + OnResize> Processor<N> {
             GlutinEvent::RedrawRequested(_) => *processor.ctx.dirty = true,
             GlutinEvent::WindowEvent { event, window_id, .. } => {
                 match event {
-                    WindowEvent::CloseRequested => processor.ctx.terminal.exit(),
+                    WindowEvent::CloseRequested => {
+                        (*processor.ctx.tab_manager).event_proxy.send_event(crate::event::Event::TerminalEvent(
+                            alacritty_terminal::event::Event::Exit
+                        ));
+                    },
                     WindowEvent::Resized(size) => {
                         // Minimizing the window sends a Resize event with zero width and
                         // height. But there's no need to ever actually resize to this.
@@ -1247,6 +1373,7 @@ impl<N: Notify + OnResize> Processor<N> {
                         *processor.ctx.dirty = true;
                     },
                     WindowEvent::KeyboardInput { input, is_synthetic: false, .. } => {
+                        // let modifiers = input.modifiers;
                         processor.key_input(input);
                     },
                     WindowEvent::ModifiersChanged(modifiers) => {
@@ -1339,9 +1466,7 @@ impl<N: Notify + OnResize> Processor<N> {
     }
 
     /// Reload the configuration files from disk.
-    fn reload_config<T>(path: &Path, processor: &mut input::Processor<T, ActionContext<'_, N, T>>)
-    where
-        T: EventListener,
+    fn reload_config(path: &Path, processor: &mut input::Processor<EventProxy, ActionContext<'_>>)
     {
         if !processor.ctx.message_buffer.is_empty() {
             processor.ctx.message_buffer.remove_target(LOG_TARGET_CONFIG);
@@ -1413,15 +1538,17 @@ impl<N: Notify + OnResize> Processor<N> {
     }
 
     /// Submit the pending changes to the `Display`.
-    fn submit_display_update<T>(
+    fn submit_display_update(
         &mut self,
-        terminal: &mut Term<T>,
         old_is_searching: bool,
         display_update_pending: DisplayUpdate,
-    ) where
-        T: EventListener,
-    {
+    ) {
         // Compute cursor positions before resize.
+        let tab_manager = self.tab_manager.clone();
+        let terminal_mutex = self.tab_manager.get_selected_tab_terminal();
+        let mut terminal_guard = terminal_mutex.lock();
+        let mut terminal = &mut *terminal_guard;
+
         let num_lines = terminal.screen_lines();
         let cursor_at_bottom = terminal.grid().cursor.point.line + 1 == num_lines;
         let origin_at_bottom = if terminal.mode().contains(TermMode::VI) {
@@ -1430,9 +1557,9 @@ impl<N: Notify + OnResize> Processor<N> {
             self.search_state.direction == Direction::Left
         };
 
+        drop(terminal_guard);
+
         self.display.handle_update(
-            terminal,
-            &mut self.notifier,
             &self.message_buffer,
             self.search_state.history_index.is_some(),
             &self.config,
@@ -1449,10 +1576,12 @@ impl<N: Notify + OnResize> Processor<N> {
                 terminal.scroll_display(Scroll::Delta(-1));
             }
         }
+
+        drop(terminal_guard);
     }
 
     /// Write the ref test results to the disk.
-    fn write_ref_test_results<T>(&self, terminal: &Term<T>) {
+    fn write_ref_test_results(&self, terminal: &Term<EventProxy>) {
         // Dump grid state.
         let mut grid = terminal.grid().clone();
         grid.initialize_all();

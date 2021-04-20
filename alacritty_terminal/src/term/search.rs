@@ -5,7 +5,7 @@ use std::ops::RangeInclusive;
 use regex_automata::{dense, DenseDFA, Error as RegexError, DFA};
 
 use crate::grid::{BidirectionalIterator, Dimensions, GridIterator, Indexed};
-use crate::index::{Boundary, Column, Direction, Point, Side};
+use crate::index::{Boundary, Column, Direction, Point, Line, Side};
 use crate::term::cell::{Cell, Flags};
 use crate::term::Term;
 
@@ -58,7 +58,8 @@ impl<T> Term<T> {
         side: Side,
         mut max_lines: Option<usize>,
     ) -> Option<Match> {
-        origin = self.expand_wide(origin, direction);
+        // origin = self.expand_wide(origin, direction);
+        origin = Point::new(Line(0), Column(0));
 
         max_lines = max_lines.filter(|max_lines| max_lines + 1 < self.total_lines());
 

@@ -5,6 +5,8 @@ use std::ops::{Index, IndexMut, Range};
 use std::sync::Arc;
 use std::{mem, ptr, str};
 
+use crate::sync::FairMutex;
+
 use bitflags::bitflags;
 use log::{debug, trace};
 use serde::{Deserialize, Serialize};
@@ -596,7 +598,7 @@ impl<T> Term<T> {
     }
 
     #[inline]
-    pub fn exit(&mut self)
+    pub fn exit(&self)
     where
         T: EventListener,
     {

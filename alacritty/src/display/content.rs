@@ -241,7 +241,8 @@ impl RenderableCell {
                 bg = content.color(NamedColor::Foreground as usize);
                 bg_alpha = 1.0;
             }
-        } else if content.search.advance(cell.point) {
+            } else if content.search.advance(cell.point) {
+            // } else if (grep_search && content.search.advance(Point::new(point.line.0, point.col))) || (!grep_search && content.search.advance(grid.visible_to_buffer(point))) {
             // Highlight the cell if it is part of a search match.
             let config_fg = colors.search.matches.foreground;
             let config_bg = colors.search.matches.background;

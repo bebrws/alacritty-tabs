@@ -5,9 +5,13 @@
 //! needs to be tracked. Additionally, we need a bit of a state machine to
 //! determine what to do when a non-modifier key is pressed.
 
+use crate::{clipboard, tab_manager::TabManager};
+use alacritty_terminal::sync::FairMutex;
+use log::trace;
 use std::borrow::Cow;
 use std::cmp::{max, min, Ordering};
 use std::marker::PhantomData;
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use glutin::dpi::PhysicalPosition;
@@ -18,6 +22,9 @@ use glutin::event_loop::EventLoopWindowTarget;
 #[cfg(target_os = "macos")]
 use glutin::platform::macos::EventLoopWindowTargetExtMacOS;
 use glutin::window::CursorIcon;
+
+use crate::event::EventProxy;
+
 
 use alacritty_terminal::ansi::{ClearMode, Handler};
 use alacritty_terminal::event::EventListener;
@@ -37,6 +44,9 @@ use crate::display::Display;
 use crate::event::{ClickState, Event, Mouse, TYPING_SEARCH_DELAY};
 use crate::message_bar::{self, Message};
 use crate::scheduler::{Scheduler, TimerId};
+
+#[macro_use]
+use crate::macros;
 
 /// Font size change interval.
 pub const FONT_SIZE_STEP: f32 = 0.5;
@@ -60,7 +70,9 @@ pub struct Processor<T: EventListener, A: ActionContext<T>> {
 }
 
 pub trait ActionContext<T: EventListener> {
-    fn write_to_pty<B: Into<Cow<'static, [u8]>>>(&self, _data: B) {}
+    fn tab_manager(&mut self) -> Arc<TabManager>;
+    fn find_word<U: EventListener>(&self, point_p: Point, side: Side, terminal: &Term<U>) -> String;
+    fn write_to_pty<B: Into<Cow<'static, [u8]>>>(&mut self, _data: B);
     fn mark_dirty(&mut self) {}
     fn size_info(&self) -> SizeInfo;
     fn copy_selection(&mut self, _ty: ClipboardType) {}
@@ -78,7 +90,8 @@ pub trait ActionContext<T: EventListener> {
     fn window(&mut self) -> &mut Window;
     fn display(&mut self) -> &mut Display;
     fn terminal(&self) -> &Term<T>;
-    fn terminal_mut(&mut self) -> &mut Term<T>;
+
+    fn terminal_mut(&mut self) -> &mut Term<EventProxy>;
     fn spawn_new_instance(&mut self) {}
     fn change_font_size(&mut self, _delta: f32) {}
     fn reset_font_size(&mut self) {}
@@ -96,7 +109,12 @@ pub trait ActionContext<T: EventListener> {
     fn search_pop_word(&mut self) {}
     fn search_history_previous(&mut self) {}
     fn search_history_next(&mut self) {}
-    fn search_next(&mut self, origin: Point, direction: Direction, side: Side) -> Option<Match>;
+    fn search_next(
+        &mut self,
+        origin: Point<usize>,
+        direction: Direction,
+        side: Side,
+    ) -> Option<Match>;
     fn advance_search_origin(&mut self, _direction: Direction) {}
     fn search_direction(&self) -> Direction;
     fn search_active(&self) -> bool;
@@ -106,6 +124,7 @@ pub trait ActionContext<T: EventListener> {
     fn trigger_hint(&mut self, _hint: &HintMatch) {}
     fn paste(&mut self, _text: &str) {}
 }
+
 
 impl Action {
     fn toggle_selection<T, A>(ctx: &mut A, ty: SelectionType)
@@ -135,6 +154,10 @@ impl<T: EventListener> Execute<T> for Action {
 
                 ctx.clear_selection();
                 ctx.scroll(Scroll::Bottom);
+                
+                // TODO: Check if needed
+                // ctx.dirty = true;
+                
                 ctx.write_to_pty(s.clone().into_bytes())
             },
             Action::Command(program) => start_daemon(program.program(), program.args()),
@@ -169,6 +192,8 @@ impl<T: EventListener> Execute<T> for Action {
                 ctx.display().vi_highlighted_hint = hint;
             },
             Action::ViAction(ViAction::SearchNext) => {
+                
+
                 let terminal = ctx.terminal();
                 let direction = ctx.search_direction();
                 let vi_point = terminal.vi_mode_cursor.point;
@@ -181,8 +206,10 @@ impl<T: EventListener> Execute<T> for Action {
                     ctx.terminal_mut().vi_goto_point(*regex_match.start());
                     ctx.mark_dirty();
                 }
+            
             },
             Action::ViAction(ViAction::SearchPrevious) => {
+                
                 let terminal = ctx.terminal();
                 let direction = ctx.search_direction().opposite();
                 let vi_point = terminal.vi_mode_cursor.point;
@@ -195,6 +222,7 @@ impl<T: EventListener> Execute<T> for Action {
                     ctx.terminal_mut().vi_goto_point(*regex_match.start());
                     ctx.mark_dirty();
                 }
+                
             },
             Action::ViAction(ViAction::SearchStart) => {
                 let terminal = ctx.terminal();
@@ -204,6 +232,7 @@ impl<T: EventListener> Execute<T> for Action {
                     ctx.terminal_mut().vi_goto_point(*regex_match.start());
                     ctx.mark_dirty();
                 }
+                
             },
             Action::ViAction(ViAction::SearchEnd) => {
                 let terminal = ctx.terminal();
@@ -213,6 +242,7 @@ impl<T: EventListener> Execute<T> for Action {
                     ctx.terminal_mut().vi_goto_point(*regex_match.end());
                     ctx.mark_dirty();
                 }
+                
             },
             Action::SearchAction(SearchAction::SearchFocusNext) => {
                 ctx.advance_search_origin(ctx.search_direction());
@@ -257,7 +287,13 @@ impl<T: EventListener> Execute<T> for Action {
             #[cfg(not(target_os = "macos"))]
             Action::Hide => ctx.window().set_visible(false),
             Action::Minimize => ctx.window().set_minimized(true),
-            Action::Quit => ctx.terminal_mut().exit(),
+            Action::Quit => {
+                let tab_manager_clone = ctx.tab_manager();
+                (*tab_manager_clone).event_proxy.send_event(crate::event::Event::TerminalEvent(
+                    alacritty_terminal::event::Event::Exit
+                ));
+                
+            },
             Action::IncreaseFontSize => ctx.change_font_size(FONT_SIZE_STEP),
             Action::DecreaseFontSize => ctx.change_font_size(FONT_SIZE_STEP * -1.),
             Action::ResetFontSize => ctx.reset_font_size(),
@@ -268,6 +304,7 @@ impl<T: EventListener> Execute<T> for Action {
                 term.vi_mode_cursor = term.vi_mode_cursor.scroll(term, scroll_lines);
 
                 ctx.scroll(Scroll::PageUp);
+                
             },
             Action::ScrollPageDown => {
                 // Move vi mode cursor.
@@ -276,6 +313,7 @@ impl<T: EventListener> Execute<T> for Action {
                 term.vi_mode_cursor = term.vi_mode_cursor.scroll(term, scroll_lines);
 
                 ctx.scroll(Scroll::PageDown);
+                
             },
             Action::ScrollHalfPageUp => {
                 // Move vi mode cursor.
@@ -284,6 +322,7 @@ impl<T: EventListener> Execute<T> for Action {
                 term.vi_mode_cursor = term.vi_mode_cursor.scroll(term, scroll_lines);
 
                 ctx.scroll(Scroll::Delta(scroll_lines));
+                
             },
             Action::ScrollHalfPageDown => {
                 // Move vi mode cursor.
@@ -292,10 +331,13 @@ impl<T: EventListener> Execute<T> for Action {
                 term.vi_mode_cursor = term.vi_mode_cursor.scroll(term, scroll_lines);
 
                 ctx.scroll(Scroll::Delta(scroll_lines));
+                
             },
             Action::ScrollLineUp => ctx.scroll(Scroll::Delta(1)),
             Action::ScrollLineDown => ctx.scroll(Scroll::Delta(-1)),
             Action::ScrollToTop => {
+                
+
                 ctx.scroll(Scroll::Top);
 
                 // Move vi mode cursor.
@@ -305,6 +347,8 @@ impl<T: EventListener> Execute<T> for Action {
                 ctx.mark_dirty();
             },
             Action::ScrollToBottom => {
+                
+
                 ctx.scroll(Scroll::Bottom);
 
                 // Move vi mode cursor.
@@ -315,6 +359,7 @@ impl<T: EventListener> Execute<T> for Action {
                 term.vi_motion(ViMotion::FirstOccupied);
                 term.vi_motion(ViMotion::FirstOccupied);
                 ctx.mark_dirty();
+                
             },
             Action::ClearHistory => ctx.terminal_mut().clear_screen(ClearMode::Saved),
             Action::ClearLogNotice => ctx.pop_message(),
@@ -756,6 +801,26 @@ impl<T: EventListener, A: ActionContext<T>> Processor<T, A> {
                 },
                 ElementState::Released => self.on_mouse_release(button),
             }
+
+            if button == MouseButton::Left && self.ctx.modifiers().logo() {
+                let mouse = self.ctx.mouse();
+                let mut point = self.ctx.size_info().pixels_to_coords(mouse.x, mouse.y);
+                let side = self.ctx.mouse().cell_side;
+                let terminal = self.ctx.terminal();
+                let word_clicked = self.ctx.find_word(point, side, terminal);
+
+                if state == ElementState::Pressed {
+                    self.ctx.write_to_pty(word_clicked.as_bytes().to_vec());
+                }
+
+            }
+
+            if button == MouseButton::Left && self.ctx.modifiers().alt() {
+                if state == ElementState::Released {
+                    self.ctx.copy_selection(alacritty_terminal::term::ClipboardType::Selection);
+                    self.ctx.clear_selection();
+                }
+            }
         }
     }
 
@@ -1007,7 +1072,8 @@ mod tests {
     impl EventListener for MockEventProxy {}
 
     struct ActionContext<'a, T> {
-        pub terminal: &'a mut Term<T>,
+        pub tab_mananger: Arc<TabManager>,
+        // pub terminal: &'a mut Term<T>,
         pub selection: &'a mut Option<Selection>,
         pub size_info: &'a SizeInfo,
         pub mouse: &'a mut Mouse,
@@ -1037,14 +1103,13 @@ mod tests {
             false
         }
 
-        fn terminal(&self) -> &Term<T> {
-            &self.terminal
+        fn tab_manager(&mut self) -> Arc<TabManager> {
+            unimplemented!();
         }
 
-        fn terminal_mut(&mut self) -> &mut Term<T> {
-            &mut self.terminal
+        fn find_word<U: EventListener>(&self, point_p: Point, side: Side, terminal: &Term<U>) -> String {
+            ""
         }
-
         fn size_info(&self) -> SizeInfo {
             *self.size_info
         }
@@ -1060,6 +1125,8 @@ mod tests {
         fn mouse_mode(&self) -> bool {
             false
         }
+
+        
 
         #[inline]
         fn mouse_mut(&mut self) -> &mut Mouse {
@@ -1089,6 +1156,14 @@ mod tests {
 
         fn display(&mut self) -> &mut Display {
             unimplemented!();
+        }
+
+        fn terminal(& self) -> &Term<T> {
+            unimplemented!();
+        }
+
+        fn terminal_mut(&mut self) -> &mut Term<EventProxy> {
+            unimplemented();
         }
 
         fn pop_message(&mut self) {

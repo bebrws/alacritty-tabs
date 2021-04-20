@@ -26,13 +26,15 @@ use crate::config::window::WindowConfig;
 const URL_REGEX: &str = "(mailto:|gemini:|gopher:|https:|http:|news:|file:|git:|ssh:|ftp:)\
                          [^\u{0000}-\u{001F}\u{007F}-\u{009F}<>\" {-}\\^⟨⟩`]+";
 
-#[derive(ConfigDeserialize, Debug, PartialEq)]
+#[derive(ConfigDeserialize, Clone, Debug, PartialEq)]
 pub struct UiConfig {
     /// Font configuration.
     pub font: Font,
 
     /// Window configuration.
     pub window: WindowConfig,
+
+    pub grep_after: usize,
 
     pub mouse: Mouse,
 
@@ -78,6 +80,7 @@ impl Default for UiConfig {
             live_config_reload: true,
             font: Default::default(),
             window: Default::default(),
+            grep_after: Default::default(),
             mouse: Default::default(),
             debug: Default::default(),
             config_paths: Default::default(),
@@ -129,7 +132,7 @@ impl UiConfig {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 struct KeyBindings(Vec<KeyBinding>);
 
 impl Default for KeyBindings {
@@ -147,7 +150,7 @@ impl<'de> Deserialize<'de> for KeyBindings {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 struct MouseBindings(Vec<MouseBinding>);
 
 impl Default for MouseBindings {
