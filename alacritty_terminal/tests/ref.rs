@@ -13,6 +13,8 @@ use alacritty_terminal::index::{Column, Line};
 use alacritty_terminal::term::cell::Cell;
 use alacritty_terminal::term::{SizeInfo, Term};
 
+use bytes::BufMut;
+
 macro_rules! ref_tests {
     ($($name:ident)*) => {
         $(
@@ -106,9 +108,10 @@ fn ref_test(dir: &Path) {
 
     let mut terminal = Term::new(&config, size, Mock);
     let mut parser = ansi::Processor::new();
+    let mut buf = Vec::with_capacity(1024).writer();
 
     for byte in recording {
-        parser.advance(&mut terminal, byte);
+        parser.advance(&mut terminal, byte, &mut buf);
     }
 
     // Truncate invisible lines from the grid.

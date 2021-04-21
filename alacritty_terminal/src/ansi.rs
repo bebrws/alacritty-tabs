@@ -1494,7 +1494,7 @@ pub mod C0 {
 #[cfg(test)]
 mod tests {
     use super::*;
-
+    use bytes::BufMut;
     use crate::term::color::Rgb;
 
     struct MockHandler {
@@ -1544,9 +1544,10 @@ mod tests {
 
         let mut parser = Processor::new();
         let mut handler = MockHandler::default();
+        let mut buf = Vec::with_capacity(1024).writer();
 
         for byte in BYTES {
-            parser.advance(&mut handler, *byte);
+            parser.advance(&mut handler, *byte, &mut buf);
         }
 
         assert_eq!(handler.attr, Some(Attr::Bold));
@@ -1558,9 +1559,10 @@ mod tests {
 
         let mut parser = Processor::new();
         let mut handler = MockHandler::default();
+        let mut buf = Vec::with_capacity(1024).writer();
 
         for byte in bytes {
-            parser.advance(&mut handler, *byte);
+            parser.advance(&mut handler, *byte, &mut buf);
         }
 
         assert!(!handler.identity_reported);
@@ -1569,7 +1571,7 @@ mod tests {
         let bytes: &[u8] = &[0x1b, b'[', b'c'];
 
         for byte in bytes {
-            parser.advance(&mut handler, *byte);
+            parser.advance(&mut handler, *byte, &mut buf);
         }
 
         assert!(handler.identity_reported);
@@ -1578,7 +1580,7 @@ mod tests {
         let bytes: &[u8] = &[0x1b, b'[', b'0', b'c'];
 
         for byte in bytes {
-            parser.advance(&mut handler, *byte);
+            parser.advance(&mut handler, *byte, &mut buf);
         }
 
         assert!(handler.identity_reported);
@@ -1590,9 +1592,10 @@ mod tests {
 
         let mut parser = Processor::new();
         let mut handler = MockHandler::default();
+        let mut buf = Vec::with_capacity(1024).writer();
 
         for byte in bytes {
-            parser.advance(&mut handler, *byte);
+            parser.advance(&mut handler, *byte, &mut buf);
         }
 
         assert!(handler.identity_reported);
@@ -1602,9 +1605,10 @@ mod tests {
 
         let mut parser = Processor::new();
         let mut handler = MockHandler::default();
+        let mut buf = Vec::with_capacity(1024).writer();
 
         for byte in bytes {
-            parser.advance(&mut handler, *byte);
+            parser.advance(&mut handler, *byte, &mut buf);
         }
 
         assert!(!handler.identity_reported);
@@ -1620,9 +1624,10 @@ mod tests {
 
         let mut parser = Processor::new();
         let mut handler = MockHandler::default();
+        let mut buf = Vec::with_capacity(1024).writer();
 
         for byte in BYTES {
-            parser.advance(&mut handler, *byte);
+            parser.advance(&mut handler, *byte, &mut buf);
         }
 
         let spec = Rgb { r: 128, g: 66, b: 255 };
@@ -1651,9 +1656,10 @@ mod tests {
 
         let mut handler = MockHandler::default();
         let mut parser = Processor::new();
+        let mut buf = Vec::with_capacity(1024).writer();
 
         for byte in BYTES {
-            parser.advance(&mut handler, *byte);
+            parser.advance(&mut handler, *byte, &mut buf);
         }
     }
 
@@ -1662,9 +1668,10 @@ mod tests {
         static BYTES: &[u8] = &[0x1b, b'(', b'0'];
         let mut parser = Processor::new();
         let mut handler = MockHandler::default();
+        let mut buf = Vec::with_capacity(1024).writer();
 
         for byte in BYTES {
-            parser.advance(&mut handler, *byte);
+            parser.advance(&mut handler, *byte, &mut buf);
         }
 
         assert_eq!(handler.index, CharsetIndex::G0);
@@ -1676,16 +1683,17 @@ mod tests {
         static BYTES: &[u8] = &[0x1b, b')', b'0', 0x0e];
         let mut parser = Processor::new();
         let mut handler = MockHandler::default();
+        let mut buf = Vec::with_capacity(1024).writer();
 
         for byte in &BYTES[..3] {
-            parser.advance(&mut handler, *byte);
+            parser.advance(&mut handler, *byte, &mut buf);
         }
 
         assert_eq!(handler.index, CharsetIndex::G1);
         assert_eq!(handler.charset, StandardCharset::SpecialCharacterAndLineDrawing);
 
         let mut handler = MockHandler::default();
-        parser.advance(&mut handler, BYTES[3]);
+        parser.advance(&mut handler, BYTES[3], &mut buf);
 
         assert_eq!(handler.index, CharsetIndex::G1);
     }

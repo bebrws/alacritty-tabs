@@ -1133,6 +1133,10 @@ mod tests {
             None
         }
 
+        fn terminal_clone(&self) -> Term<T> {
+            unimplemented!();
+        }
+
         fn search_direction(&self) -> Direction {
             Direction::Right
         }
