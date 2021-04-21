@@ -276,7 +276,7 @@ impl Pty {
         let win = size.to_winsize();
 
         let new_winsize = winsize {
-            ws_row: win.ws_row - 1,
+            ws_row: win.ws_row,
             ws_col: win.ws_col,
             ws_xpixel: win.ws_xpixel,
             ws_ypixel: win.ws_ypixel,
@@ -293,7 +293,7 @@ impl Pty {
     pub fn resize(&self, size: winsize) -> Result<(), ()> {
 
         let new_winsize = winsize {
-            ws_row: size.ws_row - 1,
+            ws_row: size.ws_row,
             ws_col: size.ws_col,
             ws_xpixel: size.ws_xpixel,
             ws_ypixel: size.ws_ypixel,

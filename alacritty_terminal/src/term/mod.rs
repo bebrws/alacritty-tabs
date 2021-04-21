@@ -308,7 +308,7 @@ impl<T> Term<T> {
 
     pub fn new<C>(config: &Config<C>, size: SizeInfo, event_proxy: T) -> Term<T> {
         let num_cols = size.columns;
-        let num_lines = size.screen_lines - 1;
+        let num_lines = size.screen_lines;
 
         let history_size = config.scrolling.history() as usize;
         let grid = Grid::new(num_lines, num_cols, history_size);
@@ -497,7 +497,7 @@ impl<T> Term<T> {
         let old_lines = self.screen_lines();
     
         let num_cols = size.columns;
-        let num_lines = size.screen_lines - 1;
+        let num_lines = size.screen_lines;
 
         // Move vi mode cursor with the content.
         let history_size = self.history_size();
