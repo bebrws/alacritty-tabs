@@ -205,6 +205,8 @@ pub enum Action {
 
     /// No action.
     None,
+
+    GoBackEnerLine,
 }
 
 impl From<&'static str> for Action {
@@ -354,6 +356,7 @@ pub fn default_mouse_bindings() -> Vec<MouseBinding> {
 pub fn default_key_bindings() -> Vec<KeyBinding> {
     let mut bindings = bindings!(
         KeyBinding;
+        G, ModifiersState::LOGO; Action::GoBackEnerLine;
         Copy;  Action::Copy;
         Copy,  +BindingMode::VI; Action::ClearSelection;
         Paste, ~BindingMode::VI; Action::Paste;

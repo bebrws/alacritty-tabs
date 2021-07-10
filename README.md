@@ -112,5 +112,9 @@ Alacritty discussions can be found in `#alacritty` on Libera.Chat.
 
 Alacritty is released under the [Apache License, Version 2.0].
 
-[Apache License, Version 2.0]: https://github.com/alacritty/alacritty/blob/master/LICENSE-APACHE
+[apache license, version 2.0]: https://github.com/alacritty/alacritty/blob/master/LICENSE-APACHE
 [tmux]: https://github.com/tmux/tmux
+
+# Added functinoality by Brad
+
+Command + G - Will jump back to the last prompt or really last line you were one when you hit enter

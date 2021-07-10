@@ -1,5 +1,6 @@
 //! Exports the `Term` type which is a high-level API for the Grid.
 
+use std::io::{self, Write};
 use std::cmp::{max, min};
 use std::ops::{Index, IndexMut, Range};
 use std::sync::Arc;
@@ -9,6 +10,8 @@ use bitflags::bitflags;
 use log::{debug, trace};
 use serde::{Deserialize, Serialize};
 use unicode_width::UnicodeWidthChar;
+
+use backtrace::Backtrace;
 
 use crate::ansi::{
     self, Attr, CharsetIndex, Color, CursorShape, CursorStyle, Handler, NamedColor, StandardCharset,
@@ -285,11 +288,27 @@ pub struct Term<T> {
     /// Information about cell dimensions.
     cell_width: usize,
     cell_height: usize,
+    enter_history: Vec<i32>,
+    enter_history_location: usize,
 }
 
 impl<T> Term<T> {
+    pub fn track_enter_hit(&mut self) {
+        let current_line = self.grid.total_lines() as i32;
+        self.enter_history.push(current_line);
+        self.enter_history_location = self.enter_history.len() -1;
+    }
 
+    pub fn goback_enter_hit(&mut self) where T: EventListener, {
+        if self.enter_history_location > 0 && self.enter_history.len() > self.enter_history_location {
+            let current_line = self.grid.total_lines() as i32;
+            let last_enter_line = self.enter_history.get(self.enter_history_location).unwrap();
+            self.grid.set_display_offset(( current_line - last_enter_line) as usize);
+            self.enter_history_location -= 1;
+        }
+    }
     
+
     #[inline]
     pub fn scroll_display(&mut self, scroll: Scroll)
     where
@@ -335,6 +354,8 @@ impl<T> Term<T> {
             is_focused: true,
             title: None,
             title_stack: Vec::new(),
+            enter_history: Vec::new(),
+            enter_history_location: 0,
             selection: None,
             cell_width: size.cell_width as usize,
             cell_height: size.cell_height as usize,
@@ -691,6 +712,7 @@ impl<T> Term<T> {
     where
         T: EventListener,
     {
+
         let display_offset = self.grid.display_offset() as i32;
         let screen_lines = self.grid.screen_lines() as i32;
 
