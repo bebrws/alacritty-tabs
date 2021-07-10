@@ -1,5 +1,6 @@
 //! Exports the `Term` type which is a high-level API for the Grid.
 
+use std::io::{self, Write};
 use std::cmp::{max, min};
 use std::ops::{Index, IndexMut, Range};
 use std::sync::Arc;
@@ -285,11 +286,33 @@ pub struct Term<T> {
     /// Information about cell dimensions.
     cell_width: usize,
     cell_height: usize,
+    enter_history: Vec<i32>,
 }
 
 impl<T> Term<T> {
 
     
+    pub fn track_enter_hit(&mut self) {
+        println!("enter hit");
+        let current_line = self.grid.screen_lines() as i32;
+        self.enter_history.push(current_line);
+    }
+
+    pub fn goback_enter_hit(&mut self) where T: EventListener, {
+        println!("Called goback");
+        let current_line = self.grid.screen_lines() as i32;
+        println!("tmerinal goback_enter_hit history {}", self.enter_history.len() as i32);
+        if self.enter_history.len() > 0 {
+        println!("tmerinal gobgot history");
+
+            let last_enter_line = self.enter_history.pop().unwrap();
+            self.scroll_display(Scroll::Delta(-(current_line- last_enter_line)));
+            self.scroll_display(Scroll::Delta(-100));
+            self.scroll_to_point(Point::new(Line(0),Column(0)));
+        }
+    }
+    
+
     #[inline]
     pub fn scroll_display(&mut self, scroll: Scroll)
     where
@@ -335,6 +358,7 @@ impl<T> Term<T> {
             is_focused: true,
             title: None,
             title_stack: Vec::new(),
+            enter_history: Vec::new(),
             selection: None,
             cell_width: size.cell_width as usize,
             cell_height: size.cell_height as usize,

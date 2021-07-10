@@ -8,6 +8,7 @@
 use crate:: tab_manager::TabManager;
 use log::trace;
 
+use std::io::{self, Write};
 
 use std::borrow::Cow;
 use std::cmp::{max, min, Ordering};
@@ -16,9 +17,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use glutin::dpi::PhysicalPosition;
-use glutin::event::{
-    ElementState, KeyboardInput, ModifiersState, MouseButton, MouseScrollDelta, TouchPhase,
-};
+use glutin::event::{ElementState, KeyboardInput, ModifiersState, MouseButton, MouseScrollDelta, TouchPhase, VirtualKeyCode};
 use glutin::event_loop::EventLoopWindowTarget;
 #[cfg(target_os = "macos")]
 use glutin::platform::macos::EventLoopWindowTargetExtMacOS;
@@ -83,6 +82,8 @@ pub trait ActionContext<T: EventListener> {
     fn mouse(&self) -> &Mouse;
     fn received_count(&mut self) -> &mut usize;
     fn suppress_chars(&mut self) -> &mut bool;
+    fn track_enter_hit(&mut self) {}
+    fn goback_enter_hit(&mut self) {}
     fn modifiers(&mut self) -> &mut ModifiersState;
     fn scroll(&mut self, _scroll: Scroll) {}
     fn window(&mut self) -> &mut Window;
@@ -841,12 +842,24 @@ impl<T: EventListener, A: ActionContext<T>> Processor<T, A> {
             }
         }
 
+
         match input.state {
             ElementState::Pressed => {
                 *self.ctx.received_count() = 0;
                 self.process_key_bindings(input);
             },
             ElementState::Released => *self.ctx.suppress_chars() = false,
+        }
+
+
+        if input.state == ElementState::Pressed && input.virtual_keycode.unwrap() == VirtualKeyCode::Return {
+            self.ctx.track_enter_hit();
+            
+
+        }
+
+        if input.state == ElementState::Pressed && input.virtual_keycode.unwrap() == VirtualKeyCode::R {
+            self.ctx.goback_enter_hit();
         }
     }
 
@@ -1158,6 +1171,13 @@ mod tests {
             false
         }
 
+        fn track_enter_hit(&mut self) {
+            self.terminal_mut().track_enter_hit();
+        }
+
+        fn goback_enter_hit(&mut self) {
+            self.terminal_mut().goback_enter_hit();
+        }
         
 
         #[inline]
@@ -1177,6 +1197,7 @@ mod tests {
         fn suppress_chars(&mut self) -> &mut bool {
             &mut self.suppress_chars
         }
+        
 
         fn modifiers(&mut self) -> &mut ModifiersState {
             &mut self.modifiers
