@@ -20,7 +20,7 @@ use alacritty_terminal::term::color::Rgb;
 use alacritty_terminal::term::SizeInfo;
 
 use crate::config::font::{Font, FontDescription};
-use crate::config::ui_config::{Delta, UIConfig};
+use crate::config::ui_config::{Delta, UiConfig};
 use crate::display::content::RenderableCell;
 use crate::gl;
 use crate::gl::types::*;
@@ -191,7 +191,7 @@ impl GlyphCache {
         let size = font.size();
 
         // Load regular font.
-        let regular_desc = Self::make_desc(&font.normal(), Slant::Normal, Weight::Normal);
+        let regular_desc = Self::make_desc(font.normal(), Slant::Normal, Weight::Normal);
 
         let regular = Self::load_regular_font(rasterizer, &regular_desc, size)?;
 
@@ -233,7 +233,7 @@ impl GlyphCache {
                 error!("{}", err);
 
                 let fallback_desc =
-                    Self::make_desc(&Font::default().normal(), Slant::Normal, Weight::Normal);
+                    Self::make_desc(Font::default().normal(), Slant::Normal, Weight::Normal);
                 rasterizer.load_font(&fallback_desc, size)
             },
         }
@@ -364,7 +364,7 @@ impl GlyphCache {
     /// Prefetch glyphs that are almost guaranteed to be loaded anyways.
     fn load_common_glyphs<L: LoadGlyph>(&mut self, loader: &mut L) {
         self.load_glyphs_for_font(self.font_key, loader);
-        self.load_glyphs_for_font(self.bold_italic_key, loader);
+        self.load_glyphs_for_font(self.bold_key, loader);
         self.load_glyphs_for_font(self.italic_key, loader);
         self.load_glyphs_for_font(self.bold_italic_key, loader);
     }
@@ -372,7 +372,7 @@ impl GlyphCache {
     /// Calculate font metrics without access to a glyph cache.
     pub fn static_metrics(font: Font, dpr: f64) -> Result<crossfont::Metrics, crossfont::Error> {
         let mut rasterizer = crossfont::Rasterizer::new(dpr as f32, font.use_thin_strokes)?;
-        let regular_desc = GlyphCache::make_desc(&font.normal(), Slant::Normal, Weight::Normal);
+        let regular_desc = GlyphCache::make_desc(font.normal(), Slant::Normal, Weight::Normal);
         let regular = Self::load_regular_font(&mut rasterizer, &regular_desc, font.size())?;
         rasterizer.get_glyph(GlyphKey { font_key: regular, character: 'm', size: font.size() })?;
 
@@ -448,7 +448,7 @@ pub struct RenderApi<'a> {
     atlas: &'a mut Vec<Atlas>,
     current_atlas: &'a mut usize,
     program: &'a mut TextShaderProgram,
-    config: &'a UIConfig,
+    config: &'a UiConfig,
 }
 
 #[derive(Debug)]
@@ -682,7 +682,7 @@ impl QuadRenderer {
         }
     }
 
-    pub fn with_api<F, T>(&mut self, config: &UIConfig, props: &SizeInfo, func: F) -> T
+    pub fn with_api<F, T>(&mut self, config: &UiConfig, props: &SizeInfo, func: F) -> T
     where
         F: FnOnce(RenderApi<'_>) -> T,
     {
@@ -1306,12 +1306,12 @@ impl Atlas {
         }
 
         // If there's not enough room in current row, go onto next one.
-        if !self.room_in_row(&glyph) {
+        if !self.room_in_row(glyph) {
             self.advance_row()?;
         }
 
         // If there's still not room, there's nothing that can be done here..
-        if !self.room_in_row(&glyph) {
+        if !self.room_in_row(glyph) {
             return Err(AtlasInsertError::Full);
         }
 
@@ -1336,11 +1336,11 @@ impl Atlas {
 
             // Load data into OpenGL.
             let (format, buffer) = match &glyph.buffer {
-                BitmapBuffer::RGB(buffer) => {
+                BitmapBuffer::Rgb(buffer) => {
                     multicolor = false;
                     (gl::RGB, buffer)
                 },
-                BitmapBuffer::RGBA(buffer) => {
+                BitmapBuffer::Rgba(buffer) => {
                     multicolor = true;
                     (gl::RGBA, buffer)
                 },

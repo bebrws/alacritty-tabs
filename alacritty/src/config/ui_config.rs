@@ -2,6 +2,7 @@ use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
 
+use glutin::event::{ModifiersState, VirtualKeyCode};
 use log::error;
 use serde::de::Error as SerdeError;
 use serde::{self, Deserialize, Deserializer};
@@ -13,7 +14,7 @@ use alacritty_terminal::term::search::RegexSearch;
 
 use crate::config::bell::BellConfig;
 use crate::config::bindings::{
-    self, Action, Binding, BindingMode, Key, KeyBinding, ModsWrapper, MouseBinding,
+    self, Action, Binding, Key, KeyBinding, ModeWrapper, ModsWrapper, MouseBinding,
 };
 use crate::config::color::Colors;
 use crate::config::debug::Debug;
@@ -23,18 +24,16 @@ use crate::config::window::WindowConfig;
 
 /// Regex used for the default URL hint.
 #[rustfmt::skip]
-const URL_REGEX: &str = "(mailto:|gemini:|gopher:|https:|http:|news:|file:|git:|ssh:|ftp:)\
-                         [^\u{0000}-\u{001F}\u{007F}-\u{009F}<>\" {-}\\^⟨⟩`]+";
+const URL_REGEX: &str = "(ipfs:|ipns:|magnet:|mailto:|gemini:|gopher:|https:|http:|news:|file:|git:|ssh:|ftp:)\
+                         [^\u{0000}-\u{001F}\u{007F}-\u{009F}<>\"\\s{-}\\^⟨⟩`]+";
 
-#[derive(ConfigDeserialize, Debug, PartialEq)]
-pub struct UIConfig {
+#[derive(ConfigDeserialize, Debug, PartialEq, Clone)]
+pub struct UiConfig {
     /// Font configuration.
     pub font: Font,
 
     /// Window configuration.
     pub window: WindowConfig,
-
-    pub grep_after: usize,
 
     pub mouse: Mouse,
 
@@ -73,36 +72,13 @@ pub struct UIConfig {
     background_opacity: Percentage,
 }
 
-impl Clone for UIConfig {
-    fn clone(&self) -> Self {
-        Self {
-            font: self.font.clone(),
-            window: self.window.clone(),
-            grep_after: self.grep_after.clone(),
-            mouse: self.mouse.clone(),
-            debug: self.debug.clone(),
-            alt_send_esc: self.alt_send_esc,
-            live_config_reload: self.live_config_reload,
-            bell: self.bell.clone(),
-            colors: self.colors.clone(),
-            draw_bold_text_with_bright_colors: self.draw_bold_text_with_bright_colors,
-            config_paths: self.config_paths.clone(),
-            hints: Hints::default(),
-            key_bindings: self.key_bindings.clone(),
-            mouse_bindings: self.mouse_bindings.clone(),
-            background_opacity: self.background_opacity.clone()
-        }
-    }
-}
-
-impl Default for UIConfig {
+impl Default for UiConfig {
     fn default() -> Self {
         Self {
             alt_send_esc: true,
             live_config_reload: true,
             font: Default::default(),
             window: Default::default(),
-            grep_after: Default::default(),
             mouse: Default::default(),
             debug: Default::default(),
             config_paths: Default::default(),
@@ -117,7 +93,7 @@ impl Default for UIConfig {
     }
 }
 
-impl UIConfig {
+impl UiConfig {
     /// Generate key bindings for all keyboard hints.
     pub fn generate_hint_bindings(&mut self) {
         for hint in &self.hints.enabled {
@@ -129,8 +105,8 @@ impl UIConfig {
             let binding = KeyBinding {
                 trigger: binding.key,
                 mods: binding.mods.0,
-                mode: BindingMode::empty(),
-                notmode: BindingMode::empty(),
+                mode: binding.mode.mode,
+                notmode: binding.mode.not_mode,
                 action: Action::Hint(hint.clone()),
             };
 
@@ -145,7 +121,7 @@ impl UIConfig {
 
     #[inline]
     pub fn key_bindings(&self) -> &[KeyBinding] {
-        &self.key_bindings.0.as_slice()
+        self.key_bindings.0.as_slice()
     }
 
     #[inline]
@@ -154,7 +130,7 @@ impl UIConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 struct KeyBindings(Vec<KeyBinding>);
 
 impl Default for KeyBindings {
@@ -172,7 +148,7 @@ impl<'de> Deserialize<'de> for KeyBindings {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 struct MouseBindings(Vec<MouseBinding>);
 
 impl Default for MouseBindings {
@@ -232,7 +208,7 @@ pub struct Delta<T: Default> {
 }
 
 /// Regex terminal hints.
-#[derive(ConfigDeserialize, Debug, PartialEq, Eq)]
+#[derive(ConfigDeserialize, Debug, PartialEq, Eq, Clone)]
 pub struct Hints {
     /// Characters for the hint labels.
     alphabet: HintsAlphabet,
@@ -263,7 +239,11 @@ impl Default for Hints {
                 action,
                 post_processing: true,
                 mouse: Some(HintMouse { enabled: true, mods: Default::default() }),
-                binding: Default::default(),
+                binding: Some(HintBinding {
+                    key: Key::Keycode(VirtualKeyCode::U),
+                    mods: ModsWrapper(ModifiersState::SHIFT | ModifiersState::CTRL),
+                    mode: Default::default(),
+                }),
             }],
             alphabet: Default::default(),
         }
@@ -361,6 +341,8 @@ pub struct HintBinding {
     pub key: Key,
     #[serde(default)]
     pub mods: ModsWrapper,
+    #[serde(default)]
+    pub mode: ModeWrapper,
 }
 
 /// Hint mouse highlighting.
@@ -417,7 +399,7 @@ impl LazyRegexVariant {
         };
 
         // Compile the regex.
-        let regex_search = match RegexSearch::new(&regex) {
+        let regex_search = match RegexSearch::new(regex) {
             Ok(regex_search) => regex_search,
             Err(error) => {
                 error!("hint regex is invalid: {}", error);

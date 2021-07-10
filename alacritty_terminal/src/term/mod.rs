@@ -15,7 +15,7 @@ use crate::ansi::{
 };
 use crate::config::Config;
 use crate::event::{Event, EventListener};
-use crate::grid::{Dimensions, DisplayIter, Grid, Scroll};
+use crate::grid::{Dimensions, Grid, GridIterator, Scroll};
 use crate::index::{self, Boundary, Column, Direction, Line, Point, Side};
 use crate::selection::{Selection, SelectionRange};
 use crate::term::cell::{Cell, Flags, LineLength};
@@ -523,8 +523,10 @@ impl<T> Term<T> {
 
         // Clamp vi cursor to viewport.
         let vi_point = self.vi_mode_cursor.point;
-        self.vi_mode_cursor.point.column = min(vi_point.column, Column(num_cols - 1));
-        self.vi_mode_cursor.point.line = min(vi_point.line, Line(num_lines as i32 - 1));
+        let viewport_bottom = Line(-(self.grid.display_offset() as i32));
+        let viewport_top = viewport_bottom + self.bottommost_line();
+        self.vi_mode_cursor.point.line = max(min(vi_point.line, viewport_top), viewport_bottom);
+        self.vi_mode_cursor.point.column = min(vi_point.column, self.last_column());
 
         // Reset scrolling region.
         self.scroll_region = Line(0)..Line(self.screen_lines() as i32);
@@ -710,7 +712,9 @@ impl<T> Term<T> {
                 point.column = Column(1);
                 point.line += 1;
             },
-            Direction::Right if flags.contains(Flags::WIDE_CHAR) => point.column += 1,
+            Direction::Right if flags.contains(Flags::WIDE_CHAR) => {
+                point.column = min(point.column + 1, self.last_column());
+            },
             Direction::Left if flags.intersects(Flags::WIDE_CHAR | Flags::WIDE_CHAR_SPACER) => {
                 if flags.contains(Flags::WIDE_CHAR_SPACER) {
                     point.column -= 1;
@@ -772,13 +776,33 @@ impl<T> Term<T> {
 
     /// Write `c` to the cell at the cursor position.
     #[inline(always)]
-    fn write_at_cursor(&mut self, c: char) -> &mut Cell {
+    fn write_at_cursor(&mut self, c: char) {
         let c = self.grid.cursor.charsets[self.active_charset].map(c);
         let fg = self.grid.cursor.template.fg;
         let bg = self.grid.cursor.template.bg;
         let flags = self.grid.cursor.template.flags;
 
-        let cursor_cell = self.grid.cursor_cell();
+        let mut cursor_cell = self.grid.cursor_cell();
+
+        // Clear all related cells when overwriting a fullwidth cell.
+        if cursor_cell.flags.intersects(Flags::WIDE_CHAR | Flags::WIDE_CHAR_SPACER) {
+            // Remove wide char and spacer.
+            let wide = cursor_cell.flags.contains(Flags::WIDE_CHAR);
+            let point = self.grid.cursor.point;
+            if wide && point.column + 1 < self.columns() {
+                self.grid[point.line][point.column + 1].flags.remove(Flags::WIDE_CHAR_SPACER);
+            } else {
+                self.grid[point.line][point.column - 1].clear_wide();
+            }
+
+            // Remove leading spacers.
+            if point.column <= 1 && point.line != self.topmost_line() {
+                let column = self.last_column();
+                self.grid[point.line - 1i32][column].flags.remove(Flags::LEADING_WIDE_CHAR_SPACER);
+            }
+
+            cursor_cell = self.grid.cursor_cell();
+        }
 
         cursor_cell.drop_extra();
 
@@ -786,8 +810,6 @@ impl<T> Term<T> {
         cursor_cell.fg = fg;
         cursor_cell.bg = bg;
         cursor_cell.flags = flags;
-
-        cursor_cell
     }
 }
 
@@ -821,18 +843,18 @@ impl<T: EventListener> Handler for Term<T> {
         // Handle zero-width characters.
         if width == 0 {
             // Get previous column.
-            let mut col = self.grid.cursor.point.column.0;
+            let mut column = self.grid.cursor.point.column;
             if !self.grid.cursor.input_needs_wrap {
-                col = col.saturating_sub(1);
+                column.0 = column.saturating_sub(1);
             }
 
             // Put zerowidth characters over first fullwidth character cell.
             let line = self.grid.cursor.point.line;
-            if self.grid[line][Column(col)].flags.contains(Flags::WIDE_CHAR_SPACER) {
-                col = col.saturating_sub(1);
+            if self.grid[line][column].flags.contains(Flags::WIDE_CHAR_SPACER) {
+                column.0 = column.saturating_sub(1);
             }
 
-            self.grid[line][Column(col)].push_zerowidth(c);
+            self.grid[line][column].push_zerowidth(c);
             return;
         }
 
@@ -841,16 +863,14 @@ impl<T: EventListener> Handler for Term<T> {
             self.wrapline();
         }
 
-        let num_cols = self.columns();
-
         // If in insert mode, first shift cells to the right.
-        if self.mode.contains(TermMode::INSERT) && self.grid.cursor.point.column + width < num_cols
-        {
+        let columns = self.columns();
+        if self.mode.contains(TermMode::INSERT) && self.grid.cursor.point.column + width < columns {
             let line = self.grid.cursor.point.line;
             let col = self.grid.cursor.point.column;
             let row = &mut self.grid[line][..];
 
-            for col in (col.0..(num_cols - width)).rev() {
+            for col in (col.0..(columns - width)).rev() {
                 row.swap(col + width, col);
             }
         }
@@ -858,10 +878,12 @@ impl<T: EventListener> Handler for Term<T> {
         if width == 1 {
             self.write_at_cursor(c);
         } else {
-            if self.grid.cursor.point.column + 1 >= num_cols {
+            if self.grid.cursor.point.column + 1 >= columns {
                 if self.mode.contains(TermMode::LINE_WRAP) {
                     // Insert placeholder before wide char if glyph does not fit in this row.
-                    self.write_at_cursor(' ').flags.insert(Flags::LEADING_WIDE_CHAR_SPACER);
+                    self.grid.cursor.template.flags.insert(Flags::LEADING_WIDE_CHAR_SPACER);
+                    self.write_at_cursor(' ');
+                    self.grid.cursor.template.flags.remove(Flags::LEADING_WIDE_CHAR_SPACER);
                     self.wrapline();
                 } else {
                     // Prevent out of bounds crash when linewrapping is disabled.
@@ -871,14 +893,18 @@ impl<T: EventListener> Handler for Term<T> {
             }
 
             // Write full width glyph to current cursor cell.
-            self.write_at_cursor(c).flags.insert(Flags::WIDE_CHAR);
+            self.grid.cursor.template.flags.insert(Flags::WIDE_CHAR);
+            self.write_at_cursor(c);
+            self.grid.cursor.template.flags.remove(Flags::WIDE_CHAR);
 
             // Write spacer to cell following the wide glyph.
             self.grid.cursor.point.column += 1;
-            self.write_at_cursor(' ').flags.insert(Flags::WIDE_CHAR_SPACER);
+            self.grid.cursor.template.flags.insert(Flags::WIDE_CHAR_SPACER);
+            self.write_at_cursor(' ');
+            self.grid.cursor.template.flags.remove(Flags::WIDE_CHAR_SPACER);
         }
 
-        if self.grid.cursor.point.column + 1 < num_cols {
+        if self.grid.cursor.point.column + 1 < columns {
             self.grid.cursor.point.column += 1;
         } else {
             self.grid.cursor.input_needs_wrap = true;
@@ -1057,7 +1083,7 @@ impl<T: EventListener> Handler for Term<T> {
         }
     }
 
-    /// Backspace `count` characters.
+    /// Backspace.
     #[inline]
     fn backspace(&mut self) {
         trace!("Backspace");
@@ -1799,7 +1825,10 @@ impl RenderableCursor {
     fn new<T>(term: &Term<T>) -> Self {
         // Cursor position.
         let vi_mode = term.mode().contains(TermMode::VI);
-        let point = if vi_mode { term.vi_mode_cursor.point } else { term.grid.cursor.point };
+        let mut point = if vi_mode { term.vi_mode_cursor.point } else { term.grid.cursor.point };
+        if term.grid[point].flags.contains(Flags::WIDE_CHAR_SPACER) {
+            point.column -= 1;
+        }
 
         // Cursor shape.
         let shape = if !vi_mode && !term.mode().contains(TermMode::SHOW_CURSOR) {
@@ -1816,7 +1845,7 @@ impl RenderableCursor {
 ///
 /// This contains all content required to render the current terminal view.
 pub struct RenderableContent<'a> {
-    pub display_iter: DisplayIter<'a, Cell>,
+    pub display_iter: GridIterator<'a, Cell>,
     pub selection: Option<SelectionRange>,
     pub cursor: RenderableCursor,
     pub display_offset: usize,
@@ -1915,6 +1944,62 @@ mod tests {
     use crate::index::{Column, Point, Side};
     use crate::selection::{Selection, SelectionType};
     use crate::term::cell::{Cell, Flags};
+
+    #[test]
+    fn scroll_display_page_up() {
+        let size = SizeInfo::new(5., 10., 1.0, 1.0, 0.0, 0.0, false);
+        let mut term = Term::new(&MockConfig::default(), size, ());
+
+        // Create 11 lines of scrollback.
+        for _ in 0..20 {
+            term.newline();
+        }
+
+        // Scrollable amount to top is 11.
+        term.scroll_display(Scroll::PageUp);
+        assert_eq!(term.vi_mode_cursor.point, Point::new(Line(-1), Column(0)));
+        assert_eq!(term.grid.display_offset(), 10);
+
+        // Scrollable amount to top is 1.
+        term.scroll_display(Scroll::PageUp);
+        assert_eq!(term.vi_mode_cursor.point, Point::new(Line(-2), Column(0)));
+        assert_eq!(term.grid.display_offset(), 11);
+
+        // Scrollable amount to top is 0.
+        term.scroll_display(Scroll::PageUp);
+        assert_eq!(term.vi_mode_cursor.point, Point::new(Line(-2), Column(0)));
+        assert_eq!(term.grid.display_offset(), 11);
+    }
+
+    #[test]
+    fn scroll_display_page_down() {
+        let size = SizeInfo::new(5., 10., 1.0, 1.0, 0.0, 0.0, false);
+        let mut term = Term::new(&MockConfig::default(), size, ());
+
+        // Create 11 lines of scrollback.
+        for _ in 0..20 {
+            term.newline();
+        }
+
+        // Change display_offset to topmost.
+        term.grid_mut().scroll_display(Scroll::Top);
+        term.vi_mode_cursor = ViModeCursor::new(Point::new(Line(-11), Column(0)));
+
+        // Scrollable amount to bottom is 11.
+        term.scroll_display(Scroll::PageDown);
+        assert_eq!(term.vi_mode_cursor.point, Point::new(Line(-1), Column(0)));
+        assert_eq!(term.grid.display_offset(), 1);
+
+        // Scrollable amount to bottom is 1.
+        term.scroll_display(Scroll::PageDown);
+        assert_eq!(term.vi_mode_cursor.point, Point::new(Line(0), Column(0)));
+        assert_eq!(term.grid.display_offset(), 0);
+
+        // Scrollable amount to bottom is 0.
+        term.scroll_display(Scroll::PageDown);
+        assert_eq!(term.vi_mode_cursor.point, Point::new(Line(0), Column(0)));
+        assert_eq!(term.grid.display_offset(), 0);
+    }
 
     #[test]
     fn semantic_selection_works() {

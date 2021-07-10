@@ -119,7 +119,7 @@ impl<'a> ToWinsize for &'a SizeInfo {
 }
 
 
-pub fn new(config: Config<crate::config::ui_config::UIConfig>, size: SizeInfo) -> Option<Pty> {
+pub fn new(config: Config<crate::config::ui_config::UiConfig>, size: SizeInfo) -> Option<Pty> {
     Some(Pty::new(config, size).unwrap())
 }
 
@@ -180,7 +180,7 @@ impl Pty {
         &mut self.file
     }
     /// Spawn a process in a new pty.
-    pub fn new(config: Config<crate::config::ui_config::UIConfig>, size: SizeInfo) -> Result<Pty, ()>
+    pub fn new(config: Config<crate::config::ui_config::UiConfig>, size: SizeInfo) -> Result<Pty, ()>
     {
 
         let new_winsize = winsize {
