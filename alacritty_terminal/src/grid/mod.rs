@@ -423,6 +423,10 @@ impl<T> Grid<T> {
         self.display_offset
     }
 
+    pub fn set_display_offset(&mut self, new_offset: usize) {
+        self.display_offset = new_offset;
+    }
+
     #[inline]
     pub fn cursor_cell(&mut self) -> &mut T {
         let point = self.cursor.point;

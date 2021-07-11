@@ -382,6 +382,13 @@ impl<'a> input::ActionContext<EventProxy> for ActionContext<'a> {
         &mut self.received_count
     }
 
+    fn track_enter_hit(&mut self) {
+        self.terminal_mut().track_enter_hit();
+    }
+    fn goback_enter_hit(&mut self) {
+        self.terminal_mut().goback_enter_hit();
+    }
+
     #[inline]
     fn suppress_chars(&mut self) -> &mut bool {
         &mut self.suppress_chars
@@ -1366,6 +1373,7 @@ impl Processor {
                         processor.ctx.display_update_pending.set_dimensions(size);
                         *processor.ctx.dirty = true;
                     },
+                    WindowEvent::ReceivedCharacter(c) => processor.received_char(c),
                     WindowEvent::KeyboardInput { input, is_synthetic: false, .. } => {
                         // let modifiers = input.modifiers;
                         processor.key_input(input);
@@ -1373,7 +1381,6 @@ impl Processor {
                     WindowEvent::ModifiersChanged(modifiers) => {
                         processor.modifiers_input(modifiers)
                     },
-                    WindowEvent::ReceivedCharacter(c) => processor.received_char(c),
                     WindowEvent::MouseInput { state, button, .. } => {
                         processor.ctx.window().set_mouse_visible(true);
                         processor.mouse_input(state, button);
