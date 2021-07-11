@@ -188,19 +188,19 @@ impl<T: EventListener> Execute<T> for Action {
                 ctx.terminal_mut().vi_motion(*motion);
                 ctx.mark_dirty();
             },
-            Action::ViAction(ViAction::ToggleNormalSelection) => {
+            Action::Vi(ViAction::ToggleNormalSelection) => {
                 Self::toggle_selection(ctx, SelectionType::Simple);
             },
-            Action::ViAction(ViAction::ToggleLineSelection) => {
+            Action::Vi(ViAction::ToggleLineSelection) => {
                 Self::toggle_selection(ctx, SelectionType::Lines);
             },
-            Action::ViAction(ViAction::ToggleBlockSelection) => {
+            Action::Vi(ViAction::ToggleBlockSelection) => {
                 Self::toggle_selection(ctx, SelectionType::Block);
             },
-            Action::ViAction(ViAction::ToggleSemanticSelection) => {
+            Action::Vi(ViAction::ToggleSemanticSelection) => {
                 Self::toggle_selection(ctx, SelectionType::Semantic);
             },
-            Action::ViAction(ViAction::Open) => {
+            Action::Vi(ViAction::Open) => {
                 let hint = ctx.display().vi_highlighted_hint.take();
                 if let Some(hint) = &hint {
                     ctx.mouse_mut().block_hint_launcher = false;
@@ -208,9 +208,7 @@ impl<T: EventListener> Execute<T> for Action {
                 }
                 ctx.display().vi_highlighted_hint = hint;
             },
-            Action::ViAction(ViAction::SearchNext) => {
-                
-
+            Action::Vi(ViAction::SearchNext) => {
                 let terminal = ctx.terminal();
                 let direction = ctx.search_direction();
                 let vi_point = terminal.vi_mode_cursor.point;
@@ -225,8 +223,7 @@ impl<T: EventListener> Execute<T> for Action {
                 }
             
             },
-            Action::ViAction(ViAction::SearchPrevious) => {
-                
+            Action::Vi(ViAction::SearchPrevious) => {
                 let terminal = ctx.terminal();
                 let direction = ctx.search_direction().opposite();
                 let vi_point = terminal.vi_mode_cursor.point;
@@ -241,7 +238,7 @@ impl<T: EventListener> Execute<T> for Action {
                 }
                 
             },
-            Action::ViAction(ViAction::SearchStart) => {
+            Action::Vi(ViAction::SearchStart) => {
                 let terminal = ctx.terminal();
                 let origin = terminal.vi_mode_cursor.point.sub(terminal, Boundary::None, 1);
 
@@ -251,7 +248,7 @@ impl<T: EventListener> Execute<T> for Action {
                 }
                 
             },
-            Action::ViAction(ViAction::SearchEnd) => {
+            Action::Vi(ViAction::SearchEnd) => {
                 let terminal = ctx.terminal();
                 let origin = terminal.vi_mode_cursor.point.add(terminal, Boundary::None, 1);
 
@@ -261,25 +258,23 @@ impl<T: EventListener> Execute<T> for Action {
                 }
                 
             },
-            Action::SearchAction(SearchAction::SearchFocusNext) => {
+            Action::Search(SearchAction::SearchFocusNext) => {
                 ctx.advance_search_origin(ctx.search_direction());
             },
-            Action::SearchAction(SearchAction::SearchFocusPrevious) => {
+            Action::Search(SearchAction::SearchFocusPrevious) => {
                 let direction = ctx.search_direction().opposite();
                 ctx.advance_search_origin(direction);
             },
-            Action::SearchAction(SearchAction::SearchConfirm) => ctx.confirm_search(),
-            Action::SearchAction(SearchAction::SearchCancel) => ctx.cancel_search(),
-            Action::SearchAction(SearchAction::SearchClear) => {
+            Action::Search(SearchAction::SearchConfirm) => ctx.confirm_search(),
+            Action::Search(SearchAction::SearchCancel) => ctx.cancel_search(),
+            Action::Search(SearchAction::SearchClear) => {
                 let direction = ctx.search_direction();
                 ctx.cancel_search();
                 ctx.start_search(direction);
             },
-            Action::SearchAction(SearchAction::SearchDeleteWord) => ctx.search_pop_word(),
-            Action::SearchAction(SearchAction::SearchHistoryPrevious) => {
-                ctx.search_history_previous()
-            },
-            Action::SearchAction(SearchAction::SearchHistoryNext) => ctx.search_history_next(),
+            Action::Search(SearchAction::SearchDeleteWord) => ctx.search_pop_word(),
+            Action::Search(SearchAction::SearchHistoryPrevious) => ctx.search_history_previous(),
+            Action::Search(SearchAction::SearchHistoryNext) => ctx.search_history_next(),
             Action::SearchForward => ctx.start_search(Direction::Right),
             Action::SearchBackward => ctx.start_search(Direction::Left),
             Action::Copy => ctx.copy_selection(ClipboardType::Clipboard),
@@ -304,13 +299,7 @@ impl<T: EventListener> Execute<T> for Action {
             #[cfg(not(target_os = "macos"))]
             Action::Hide => ctx.window().set_visible(false),
             Action::Minimize => ctx.window().set_minimized(true),
-            Action::Quit => {
-                let tab_manager_clone = ctx.tab_manager();
-                (*tab_manager_clone).event_proxy.send_event(crate::event::Event::TerminalEvent(
-                    alacritty_terminal::event::Event::Exit
-                ));
-                
-            },
+            Action::Quit => ctx.terminal_mut().exit(),
             Action::IncreaseFontSize => ctx.change_font_size(FONT_SIZE_STEP),
             Action::DecreaseFontSize => ctx.change_font_size(FONT_SIZE_STEP * -1.),
             Action::ResetFontSize => ctx.reset_font_size(),
@@ -1076,7 +1065,6 @@ mod tests {
     use glutin::event::{Event as GlutinEvent, VirtualKeyCode, WindowEvent};
 
     use alacritty_terminal::event::Event as TerminalEvent;
-    use alacritty_terminal::selection::Selection;
 
     use crate::config::Binding;
     use crate::message_bar::MessageBuffer;
@@ -1112,7 +1100,6 @@ mod tests {
     struct ActionContext<'a, T> {
         pub tab_manager: Arc<TabManager<T>>,
         pub terminal: &'a mut Term<T>,
-        pub selection: &'a mut Option<Selection>,
         pub size_info: &'a SizeInfo,
         pub mouse: &'a mut Mouse,
         pub clipboard: &'a mut Clipboard,
@@ -1147,6 +1134,9 @@ mod tests {
 
         fn tab_manager(&mut self) -> Arc<TabManager<EventProxy>> {
             unimplemented!();
+        }
+        fn terminal(&self) -> &Term<T> {
+            self.terminal
         }
 
         fn find_word<U: EventListener>(&mut self, _point_p: Point, _terminal: &Term<U>) -> Option<String> {
@@ -1263,14 +1253,11 @@ mod tests {
                     ..Mouse::default()
                 };
 
-                let mut selection = None;
-
                 let mut message_buffer = MessageBuffer::new();
 
                 let context = ActionContext {
                     tab_manager: tab_manager_arc,
                     terminal: &mut terminal,
-                    selection: &mut selection,
                     mouse: &mut mouse,
                     size_info: &size,
                     clipboard: &mut clipboard,

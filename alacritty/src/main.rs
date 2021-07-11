@@ -1,7 +1,7 @@
 //! Alacritty - The GPU Enhanced Terminal.
 #![feature(new_uninit)]
 #![warn(rust_2018_idioms, future_incompatible)]
-#![deny(clippy::all, clippy::if_not_else, clippy::enum_glob_use, clippy::wrong_pub_self_convention)]
+#![deny(clippy::all, clippy::if_not_else, clippy::enum_glob_use)]
 #![cfg_attr(feature = "cargo-clippy", deny(warnings))]
 // With the default subsystem, 'console', windows creates an additional console
 // window for the program.
@@ -182,7 +182,7 @@ fn run(
     std::thread::spawn(move || loop {
         std::thread::sleep(Duration::from_millis(100));
 
-        event_proxy_clone.send_event(crate::event::Event::TerminalEvent(
+        event_proxy_clone.send_event(crate::event::Event::Terminal(
             alacritty_terminal::event::Event::Wakeup,
         ));
     });
@@ -238,6 +238,10 @@ fn run(
 }
 
 fn log_config_path(config: &Config) {
+    if config.ui_config.config_paths.is_empty() {
+        return;
+    }
+
     let mut msg = String::from("Configuration files loaded from:");
     for path in &config.ui_config.config_paths {
         msg.push_str(&format!("\n  {:?}", path.display()));

@@ -59,7 +59,7 @@ impl Conpty {
 // The ConPTY handle can be sent between threads.
 unsafe impl Send for Conpty {}
 
-pub fn new(config: Config<crate::config::ui_config::UIConfig>, size: SizeInfo) -> Option<Pty> {
+pub fn new(config: Config<crate::config::ui_config::UiConfig>, size: SizeInfo) -> Option<Pty> {
     let mut pty_handle = 0 as HPCON;
 
     // Passing 0 as the size parameter allows the "system default" buffer

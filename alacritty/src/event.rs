@@ -29,7 +29,7 @@ use crate::display::content::RenderableContent;
 use crate::display::color::List;
 
 use alacritty_terminal::config::LOG_TARGET_CONFIG;
-use alacritty_terminal::event::{Event as TerminalEvent, EventListener};
+use alacritty_terminal::event::{Event as TerminalEvent, EventListener, Notify, OnResize};
 use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::index::{Boundary, Column, Direction, Line, Point, Side};
 use alacritty_terminal::selection::{Selection, SelectionType};
@@ -64,7 +64,7 @@ const MAX_SEARCH_HISTORY_SIZE: usize = 255;
 /// Events dispatched through the UI event loop.
 #[derive(Debug, Clone)]
 pub enum Event {
-    TerminalEvent(TerminalEvent),
+    Terminal(TerminalEvent),
     DprChanged(f64, (u32, u32)),
     Scroll(Scroll),
     ConfigReload(PathBuf),
@@ -81,7 +81,7 @@ impl From<Event> for GlutinEvent<'_, Event> {
 
 impl From<TerminalEvent> for Event {
     fn from(event: TerminalEvent) -> Self {
-        Event::TerminalEvent(event)
+        Event::Terminal(event)
     }
 }
 
@@ -823,7 +823,7 @@ impl<'a> ActionContext<'a> {
             self.search_state.dfas = None;
         } else {
             // Create search dfas for the new regex string.
-            self.search_state.dfas = RegexSearch::new(&regex).ok();
+            self.search_state.dfas = RegexSearch::new(regex).ok();
 
             // Update search highlighting.
             self.goto_match(MAX_SEARCH_WHILE_TYPING);
@@ -1125,7 +1125,7 @@ impl Processor {
 
             match event {
                 // Check for shutdown.
-                GlutinEvent::UserEvent(Event::TerminalEvent(TerminalEvent::Exit)) => {
+                GlutinEvent::UserEvent(Event::Terminal(TerminalEvent::Exit)) => {
                     *control_flow = ControlFlow::Exit;
                     return;
                 },
@@ -1212,7 +1212,7 @@ impl Processor {
                 let terminal_arc_mutex_clone = tab_manager_after_clone.get_selected_tab_terminal();
                 let mut terminal_guard = terminal_arc_mutex_clone.lock();
                 let terminal = &mut *terminal_guard;
-                self.display.update_highlighted_hints(
+                self.dirty |= self.display.update_highlighted_hints(
                     &terminal,
                     &self.config,
                     &self.mouse,
@@ -1220,7 +1220,6 @@ impl Processor {
                 );
                 drop(terminal_guard);
                 self.mouse.hint_highlight_dirty = false;
-                self.dirty = true;
             }
 
             if self.dirty {
@@ -1294,7 +1293,7 @@ impl Processor {
                     processor.ctx.display.cursor_hidden ^= true;
                     *processor.ctx.dirty = true;
                 },
-                Event::TerminalEvent(event) => match event {
+                Event::Terminal(event) => match event {
                     TerminalEvent::Title(title) => {
                         let ui_config = &processor.ctx.config.ui_config;
                         if ui_config.window.dynamic_title {
@@ -1354,11 +1353,7 @@ impl Processor {
             GlutinEvent::RedrawRequested(_) => *processor.ctx.dirty = true,
             GlutinEvent::WindowEvent { event, window_id, .. } => {
                 match event {
-                    WindowEvent::CloseRequested => {
-                        (*processor.ctx.tab_manager).event_proxy.send_event(crate::event::Event::TerminalEvent(
-                            alacritty_terminal::event::Event::Exit
-                        ));
-                    },
+                    WindowEvent::CloseRequested => processor.ctx.terminal.exit(),
                     WindowEvent::Resized(size) => {
                         // Minimizing the window sends a Resize event with zero width and
                         // height. But there's no need to ever actually resize to this.
@@ -1472,7 +1467,7 @@ impl Processor {
             processor.ctx.display_update_pending.dirty = true;
         }
 
-        let config = match config::reload(&path, &processor.ctx.cli_options) {
+        let config = match config::reload(path, processor.ctx.cli_options) {
             Ok(config) => config,
             Err(_) => return,
         };
@@ -1628,6 +1623,6 @@ impl EventProxy {
 
 impl EventListener for EventProxy {
     fn send_event(&self, event: TerminalEvent) {
-        let _ = self.0.send_event(Event::TerminalEvent(event));
+        let _ = self.0.send_event(Event::Terminal(event));
     }
 }

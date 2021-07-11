@@ -28,7 +28,7 @@ extern "system" fn child_exit_callback(_ctx: PVOID, timed_out: BOOLEAN) {
             let ref_box = ebox.as_ptr(); 
             if let Ok(event_loop_guard) = (*ref_box).lock() {
                 let event_loop = &*event_loop_guard;
-                let event_sent_result = event_loop.send_event(crate::event::Event::TerminalEvent(alacritty_terminal::event::Event::Close));
+                let event_sent_result = event_loop.send_event(alacritty_terminal::event::Event(alacritty_terminal::event::Event::Close));
                 match event_sent_result {
                     Ok(_res) => {
 
