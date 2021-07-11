@@ -485,6 +485,7 @@ impl Display {
         message_buffer: &MessageBuffer,
         config: &Config,
         search_state: &SearchState,
+        mouse: &Mouse,
     ) {
         // Collect renderable content before the terminal is dropped.
         let mut content = RenderableContent::new(config, self, &terminal, search_state);
@@ -595,24 +596,31 @@ impl Display {
             }
         }
 
-        let tabs_string = format!("{} Tab: {} of {}", tab_buttons, sel_tab, tab_max + 1);
-        let tab_string_len = tabs_string.len() + 2;
+        let now = Instant::now();
+        let elapsed = now - mouse.last_moved_timestamp;
 
-        let mut columns = (size_info.width() / size_info.cell_width()) as usize;
-        columns = if columns > 2 { columns - 2 } else { columns };
+        // If the mouse has been moved in the last 3 seconds then show the tabs list
+        if elapsed.as_secs() < 3 {
 
-        let tab_string_location = if columns > tab_string_len { columns - tab_string_len } else { 0 };
+            let tabs_string = format!("{} Tab: {} of {}", tab_buttons, sel_tab, tab_max + 1);
+            let tab_string_len = tabs_string.len() + 2;
 
-        let p: Point<usize> = Point::new(0, Column(tab_string_location));
-        self.renderer.with_api(&config.ui_config, &size_info, |mut api| {
-            api.render_string(
-                glyph_cache,
-                p,
-                config.ui_config.colors.primary.tabs,
-                config.ui_config.colors.primary.background,
-                &tabs_string,
-            );
-        });
+            let mut columns = (size_info.width() / size_info.cell_width()) as usize;
+            columns = if columns > 2 { columns - 2 } else { columns };
+
+            let tab_string_location = if columns > tab_string_len { columns - tab_string_len } else { 0 };
+
+            let p: Point<usize> = Point::new(0, Column(tab_string_location));
+            self.renderer.with_api(&config.ui_config, &size_info, |mut api| {
+                api.render_string(
+                    glyph_cache,
+                    p,
+                    config.ui_config.colors.primary.tabs,
+                    config.ui_config.colors.primary.background,
+                    &tabs_string,
+                );
+            });
+        }
 
         if let Some(message) = message_buffer.message() {
             let search_offset = if search_state.regex().is_some() { 1 } else { 0 };

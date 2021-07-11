@@ -445,6 +445,9 @@ impl<T: EventListener, A: ActionContext<T>> Processor<T, A> {
                 self.mouse_report(35, ElementState::Pressed);
             }
         }
+
+        let now = Instant::now();
+        self.ctx.mouse_mut().last_moved_timestamp = now;
     }
 
     /// Check which side of a cell an X coordinate lies on.

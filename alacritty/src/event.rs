@@ -974,6 +974,7 @@ pub struct Mouse {
     pub left_button_state: ElementState,
     pub middle_button_state: ElementState,
     pub right_button_state: ElementState,
+    pub last_moved_timestamp: Instant,
     pub last_click_timestamp: Instant,
     pub last_click_button: MouseButton,
     pub click_state: ClickState,
@@ -991,6 +992,7 @@ impl Default for Mouse {
     fn default() -> Mouse {
         Mouse {
             last_click_timestamp: Instant::now(),
+            last_moved_timestamp: Instant::now(),
             last_click_button: MouseButton::Left,
             left_button_state: ElementState::Released,
             middle_button_state: ElementState::Released,
@@ -1248,7 +1250,7 @@ impl Processor {
                 let terminal = &mut *terminal_guard;
                 
                 // Redraw screen.
-                self.display.draw(tab_manager_after_clone, terminal, &self.message_buffer, &self.config, &self.search_state);
+                self.display.draw(tab_manager_after_clone, terminal, &self.message_buffer, &self.config, &self.search_state, &self.mouse);
 
                 drop(terminal_guard);
             }
