@@ -7,7 +7,11 @@ That's really why this might be useful to someone. If you love Alacritty and wan
 
 After continually merging in changes from the official repo I prob have broken the Windows build. The OSX build however is something I use often and works great.
 
-It has been a while since I last looked at this project but I believe I have it set so the tabs are only visible if you move the mouse.
+The tabs are only visible if you move the mouse. Command + T will create a new tab by default.
+
+<p align="center">
+    <img width="200" alt="Alacritty Logo" src="https://raw.githubusercontent.com/bebrws/alacritty-tabs/master/tabs.gif">
+</p>
 
 # Original Alacritty Readme:
 
