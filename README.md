@@ -1,3 +1,16 @@
+# Disclaimer for this fork:
+
+This was a project of mine to help me learn Rust and hopefully create or modify something in a usefule way.
+I would not by any means say that this a great example of writing good concurrent Rust. But it works and I don't believe had any significant loss in performance while still adding the ability to use tabs without requiring a terminal multiplexer like tmux.
+
+That's really why this might be useful to someone. If you love Alacritty and want tabs but don't want to deal with tmux then this project may be of some use.
+
+After continually merging in changes from the official repo I prob have broken the Windows build. The OSX build however is something I use often and works great.
+
+It has been a while since I last looked at this project but I believe I have it set so the tabs are only visible if you move the mouse.
+
+# Original Alacritty Readme:
+
 <p align="center">
     <img width="200" alt="Alacritty Logo" src="https://raw.githubusercontent.com/alacritty/alacritty/master/extra/logo/compat/alacritty-term%2Bscanlines.png">
 </p>
