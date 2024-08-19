@@ -599,8 +599,9 @@ impl Display {
         let now = Instant::now();
         let elapsed = now - mouse.last_moved_timestamp;
 
+        // Commenting out the hiding of the tabs, its annoying
         // If the mouse has been moved in the last 3 seconds then show the tabs list
-        if elapsed.as_secs() < 3 {
+        // if elapsed.as_secs() < 3 {
 
             let tabs_string = format!("{} Tab: {} of {}", tab_buttons, sel_tab, tab_max + 1);
             let tab_string_len = tabs_string.len() + 2;
@@ -620,7 +621,7 @@ impl Display {
                     &tabs_string,
                 );
             });
-        }
+        // }
 
         if let Some(message) = message_buffer.message() {
             let search_offset = if search_state.regex().is_some() { 1 } else { 0 };
